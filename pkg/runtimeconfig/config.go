@@ -359,6 +359,9 @@ type CloudflaredConfig struct {
 // compatibility.
 type MCPConfig struct {
 	TraceContextEnabled bool
+	Trace               bool
+	TraceBody           bool
+	TraceUnsafe         bool
 	ServerURL           *url.URL
 	UnixSocketPath      string
 	Command             string
@@ -646,6 +649,9 @@ func RegisterFlags(fs *pflag.FlagSet, flavor Flavor) {
 	fs.StringArray("mcp.server-url", nil, "Target MCP server URL (repeatable; format url=...,channel=...,unix-socket=...,http-proxy=...,client-cert=...,client-key=...) (env.MCP_SERVER_URL)")
 	fs.StringArray("mcp.command", nil, "Command to launch an MCP server over stdio (repeatable; format command=...,channel=...) (env.MCP_COMMAND)")
 	fs.Bool("mcp.stdio-send-initialized-notification", false, "Opt in to sending notifications/initialized after a successful stdio initialize response (env.MCP_STDIO_SEND_INITIALIZED_NOTIFICATION)")
+	fs.Bool("mcp.trace", false, "Enable MCP JSON-RPC trace (env.MCP_TRACE)")
+	fs.Bool("mcp.trace-body", false, "Include redacted JSON-RPC payloads (env.MCP_TRACE_BODY)")
+	fs.Bool("mcp.trace-unsafe", false, "Disable trace payload redaction (env.MCP_TRACE_UNSAFE)")
 	fs.Bool("mcp.forward-trace-context", false, "Opt in to forwarding traceparent/tracestate through MCP params._meta over stdio and HTTP (env.MCP_FORWARD_TRACE_CONTEXT)")
 	fs.Bool("tracing.enabled", false, "Opt in to local request tracing (env.TRACING_ENABLED)")
 	fs.String("tracing.file", "", "New local JSONL trace file, required when tracing is enabled (env.TRACING_FILE)")
@@ -2031,6 +2037,19 @@ func buildMCPConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), gl
 		return MCPConfig{}, err
 	}
 
+	trace, err := getBool(fs, lookupEnv, "mcp.trace", "MCP_TRACE")
+	if err != nil {
+		return MCPConfig{}, err
+	}
+	traceBody, err := getBool(fs, lookupEnv, "mcp.trace-body", "MCP_TRACE_BODY")
+	if err != nil {
+		return MCPConfig{}, err
+	}
+	traceUnsafe, err := getBool(fs, lookupEnv, "mcp.trace-unsafe", "MCP_TRACE_UNSAFE")
+	if err != nil {
+		return MCPConfig{}, err
+	}
+	trace = trace || traceBody
 	maxConcurrent := defaultMCPMaxConcurrentRequests
 	if flag := fs.Lookup("mcp.max-concurrent-requests"); flag != nil && flag.Changed {
 		val, err := strconv.Atoi(flag.Value.String())
@@ -2114,6 +2133,9 @@ func buildMCPConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), gl
 		StartupWaitTimeout:               startupWaitTimeout,
 		StdioSendInitializedNotification: stdioSendInitializedNotification,
 		ForwardTraceContext:              forwardTraceContext,
+		Trace:                            trace,
+		TraceBody:                        traceBody,
+		TraceUnsafe:                      traceUnsafe,
 		ConnectionMaxTTL:                 ttl,
 		MaxConcurrentRequests:            maxConcurrent,
 		ExtraHeaders:                     extraHeaders,

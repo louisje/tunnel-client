@@ -231,6 +231,9 @@ mcp:
     - https://auth.example.com
   # Optional. Wait for a sidecar/local HTTP listener before the first poll.
   startup_wait_timeout: 60s
+  trace: false # MCP JSON-RPC message metadata, independent of log.level
+  trace-body: false # include redacted payload; implies trace
+  trace-unsafe: false # disable redaction (sensitive data!)
   connection_max_ttl: 10m
   max_concurrent_requests: 10
 harpoon:

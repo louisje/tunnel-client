@@ -110,6 +110,9 @@ type fileMCPConfig struct {
 	StartupWaitTimeout               *string            `yaml:"startup_wait_timeout"`
 	StdioSendInitializedNotification *bool              `yaml:"stdio_send_initialized_notification"`
 	ForwardTraceContext              *bool              `yaml:"forward_trace_context"`
+	Trace                            *bool              `yaml:"trace"`
+	TraceBody                        *bool              `yaml:"trace-body"`
+	TraceUnsafe                      *bool              `yaml:"trace-unsafe"`
 	ConnectionMaxTTL                 *string            `yaml:"connection_max_ttl"`
 	MaxConcurrentRequests            *int               `yaml:"max_concurrent_requests"`
 }
@@ -436,6 +439,9 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 	setString(env, "MCP_STARTUP_WAIT_TIMEOUT", c.MCP.StartupWaitTimeout)
 	setBool(env, "MCP_STDIO_SEND_INITIALIZED_NOTIFICATION", c.MCP.StdioSendInitializedNotification)
 	setBool(env, "MCP_FORWARD_TRACE_CONTEXT", c.MCP.ForwardTraceContext)
+	setBool(env, "MCP_TRACE", c.MCP.Trace)
+	setBool(env, "MCP_TRACE_BODY", c.MCP.TraceBody)
+	setBool(env, "MCP_TRACE_UNSAFE", c.MCP.TraceUnsafe)
 	setString(env, "MCP_CONNECTION_MAX_TTL", c.MCP.ConnectionMaxTTL)
 	setInt(env, "MCP_MAX_CONCURRENT_REQUESTS", c.MCP.MaxConcurrentRequests)
 

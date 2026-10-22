@@ -81,6 +81,9 @@ type mcpProcessor struct {
 	tunnelResponder     controlplane.Responder
 	connectionMaxTTL    time.Duration
 	forwardTraceContext bool
+	traceMCP            bool
+	traceMCPBody        bool
+	traceMCPUnsafe      bool
 	forwardRequestID    runtimeconfig.RequestIDForwarding
 	tracing             *tracing.Runtime
 	metrics             *processorMetrics
@@ -306,6 +309,9 @@ func NewProcessor(p processorParams) (Processor, error) {
 		tunnelResponder:     p.TunnelResponder,
 		connectionMaxTTL:    p.MCPConfig.ConnectionMaxTTL,
 		forwardTraceContext: forwardTraceContext,
+		traceMCP:            p.MCPConfig.Trace || p.MCPConfig.TraceBody,
+		traceMCPBody:        p.MCPConfig.TraceBody,
+		traceMCPUnsafe:      p.MCPConfig.TraceUnsafe,
 		forwardRequestID:    p.MCPConfig.ForwardRequestID,
 		tracing:             p.Tracing,
 		metrics:             processorMetrics,
@@ -544,6 +550,11 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 		}
 
 		encodedError, encodeErr := buildTunnelFailureJSONRPCErrorResponse(req, status, failure)
+		if encodeErr == nil {
+			if traceMessage, decodeErr := jsonrpc.DecodeMessage(encodedError); decodeErr == nil {
+				p.logMCPMessage(ctx, logger, "inbound", channel, traceMessage, req.Method, 0)
+			}
+		}
 		if encodeErr != nil {
 			logger.ErrorContext(ctx, "failed to encode MCP error response", slog.String("error", encodeErr.Error()))
 			return fmt.Errorf("encode error response: %w", encodeErr)
@@ -592,6 +603,7 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 			req = forwardTraceContext(req, headers, provider.TraceContext())
 		}
 	}
+	p.logMCPMessage(ctx, logger, "outbound", channel, req, "", 0)
 	writeResult, err := conn.Write(ctx, headers, req)
 	if ctx.Err() != nil {
 		if !retireExpiredResponseConnection(ctx, conn) {
@@ -609,6 +621,9 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 	if preserved := writeResult.PreservedError; preserved != nil {
 		markCommandTraceFailed(ctx)
 		encodedError := preserved.Payload()
+		if traceMessage, decodeErr := jsonrpc.DecodeMessage(encodedError); decodeErr == nil {
+			p.logMCPMessage(ctx, logger, "inbound", channel, traceMessage, req.Method, time.Since(writeResult.StartedAt))
+		}
 		respHeader = jsonRPCResponseHeaders(ctx, logger, respHeader)
 		tunnelResponse := types.NewTunnelResponse(channel, encodedError, statusCode, respHeader)
 		if !isNotification {
@@ -956,6 +971,7 @@ func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.Forw
 			return
 		}
 
+		p.logMCPMessage(ctx, logger, "inbound", channel, msg, req.Method, time.Since(startedAt))
 		if notifyMsg, ok := asNotification(msg); ok {
 			if !notificationForwardingEnabled {
 				continue
