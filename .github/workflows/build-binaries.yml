@@ -1,0 +1,70 @@
+name: Build binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-binaries.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: ''
+          - goos: linux
+            goarch: arm64
+            suffix: ''
+          - goos: windows
+            goarch: amd64
+            suffix: '.exe'
+          - goos: darwin
+            goarch: amd64
+            suffix: ''
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build CLI binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for item in 'tunnel-client:client:full' 'tunnel-client-runtime:client-runtime:runtime' 'tunnel-client-runtime-cloudflared:client-runtime-cloudflared:runtime-cloudflared'; do
+            IFS=: read -r name entry flavor <<< "${item}"
+            go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=${flavor}" \
+              -o "out/${name}${{ matrix.suffix }}" "./cmd/${entry}"
+          done
+          (cd out && shasum -a 256 * > SHA256SUMS)
+      - name: Upload executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: tunnel-client-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
