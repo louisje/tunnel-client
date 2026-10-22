@@ -2,6 +2,11 @@ name: Publish fork Homebrew build
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (for example 0.0.18.1)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,23 +22,26 @@ jobs:
           cache: true
       - name: Build macOS Intel release archive
         env:
+          VERSION: ${{ inputs.version }}
           GOOS: darwin
           GOARCH: amd64
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
           mkdir -p dist/tunnel-client
-          go build -trimpath -buildvcs=false -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full" -o dist/tunnel-client/tunnel-client ./cmd/client
+          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'Invalid semantic version'; exit 1; }
+          go build -trimpath -buildvcs=false -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full -X github.com/openai/tunnel-client/pkg/version.semanticVersion=${VERSION}" -o dist/tunnel-client/tunnel-client ./cmd/client
           cd dist/tunnel-client
           sha256sum tunnel-client > SHA256SUMS
           zip -9 ../tunnel-client-darwin-amd64.zip tunnel-client SHA256SUMS
       - name: Publish versioned release
         env:
+          VERSION: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create fork-v0.0.17.1 dist/tunnel-client-darwin-amd64.zip \
+          gh release create "v${VERSION}" dist/tunnel-client-darwin-amd64.zip \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
-            --title "Fork build 0.0.17.1" \
-            --notes "macOS Intel CLI build from the louisje/tunnel-client fork." \
+            --title "v${VERSION}" \
+            --notes "macOS Intel CLI build from louisje/tunnel-client." \
             --prerelease
