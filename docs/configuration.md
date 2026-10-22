@@ -232,7 +232,7 @@ mcp:
   # Optional. Wait for a sidecar/local HTTP listener before the first poll.
   startup_wait_timeout: 60s
   trace: false # MCP JSON-RPC message metadata, independent of log.level
-  trace-body: false # include redacted payload; implies trace
+  trace-body: false # include best-effort redacted payload; implies trace
   trace-unsafe: false # disable redaction (sensitive data!)
   connection_max_ttl: 10m
   max_concurrent_requests: 10
@@ -1197,3 +1197,19 @@ export CONTROL_PLANE_TUNNEL_ID="tunnel_0123456789abcdef0123456789abcdef"
   --log.level=info \
   --log.format=struct-text
 ```
+
+
+### MCP JSON-RPC tracing
+
+Enable MCP message metadata with mcp.trace: true, independent of log.level.
+mcp.trace-body: true also includes best-effort redacted JSON-RPC payloads and
+implicitly enables trace. mcp.trace-unsafe: true disables payload redaction.
+
+Flags: --mcp.trace, --mcp.trace-body, --mcp.trace-unsafe.
+Environment: MCP_TRACE, MCP_TRACE_BODY, MCP_TRACE_UNSAFE.
+Precedence: CLI flags > environment > profile YAML > defaults.
+
+Redaction recognizes common credential field names and selected inline token
+patterns, but arbitrary tool parameters/results can still contain secrets.
+Use body tracing only in a trusted debugging environment, protect log files,
+and delete them after troubleshooting.
