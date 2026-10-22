@@ -2,11 +2,6 @@ name: Publish fork Homebrew build
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (for example 0.0.18.1)'
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -20,28 +15,45 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Resolve upstream stable version
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/openai/tunnel-client/releases/latest --jq .tag_name)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Build macOS Intel release archive
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.upstream.outputs.tag }}
           GOOS: darwin
           GOARCH: amd64
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
           mkdir -p dist/tunnel-client
-          [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo 'Invalid semantic version'; exit 1; }
+          VERSION="${VERSION#v}"
           go build -trimpath -buildvcs=false -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full -X github.com/openai/tunnel-client/pkg/version.semanticVersion=${VERSION}" -o dist/tunnel-client/tunnel-client ./cmd/client
           cd dist/tunnel-client
           sha256sum tunnel-client > SHA256SUMS
           zip -9 ../tunnel-client-darwin-amd64.zip tunnel-client SHA256SUMS
-      - name: Publish versioned release
+      - name: Align fork tag and publish release
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ steps.upstream.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v${VERSION}" dist/tunnel-client-darwin-amd64.zip \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --title "v${VERSION}" \
-            --notes "macOS Intel CLI build from louisje/tunnel-client." \
-            --prerelease
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${VERSION}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${VERSION}" -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${VERSION}" dist/tunnel-client-darwin-amd64.zip --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${VERSION}" dist/tunnel-client-darwin-amd64.zip \
+              --repo "${GITHUB_REPOSITORY}" \
+              --verify-tag \
+              --title "${VERSION}" \
+              --notes "macOS Intel CLI build from louisje/tunnel-client."
+          fi
