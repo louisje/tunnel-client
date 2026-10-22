@@ -43,11 +43,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" >/dev/null 2>&1; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${VERSION}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
-          else
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${VERSION}" -f sha="${GITHUB_SHA}" >/dev/null
-          fi
+          git tag -f "${VERSION}" "${GITHUB_SHA}"
+          # This is the fork's tag, not openai/tunnel-client's tag.
+          git push --force origin "refs/tags/${VERSION}"
           if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${VERSION}" dist/tunnel-client-darwin-amd64.zip --clobber --repo "${GITHUB_REPOSITORY}"
           else
