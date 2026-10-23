@@ -1,4 +1,4 @@
-name: Publish fork Homebrew build
+name: Publish fork binaries
 
 on:
   workflow_dispatch:
@@ -23,20 +23,32 @@ jobs:
           tag=$(gh api repos/openai/tunnel-client/releases/latest --jq .tag_name)
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Build macOS Intel release archive
+      - name: Build fork release archives
         env:
           VERSION: ${{ steps.upstream.outputs.tag }}
-          GOOS: darwin
-          GOARCH: amd64
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
-          mkdir -p dist/tunnel-client
-          VERSION="${VERSION#v}"
-          go build -trimpath -buildvcs=false -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full -X github.com/openai/tunnel-client/pkg/version.semanticVersion=${VERSION}" -o dist/tunnel-client/tunnel-client ./cmd/client
-          cd dist/tunnel-client
-          sha256sum tunnel-client > SHA256SUMS
-          zip -9 ../tunnel-client-darwin-amd64.zip tunnel-client SHA256SUMS
+          version="${VERSION#v}"
+          mkdir -p dist
+
+          for platform in darwin/amd64 linux/amd64 linux/arm64; do
+            goos="${platform%/*}"
+            goarch="${platform#*/}"
+            archive="tunnel-client-${goos}-${goarch}.zip"
+            stage="$(mktemp -d)"
+
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${GITHUB_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full -X github.com/openai/tunnel-client/pkg/version.semanticVersion=${version}" \
+              -o "$stage/tunnel-client" ./cmd/client
+
+            (
+              cd "$stage"
+              sha256sum tunnel-client > SHA256SUMS
+              zip -9 "$GITHUB_WORKSPACE/dist/$archive" tunnel-client SHA256SUMS
+            )
+            rm -rf "$stage"
+          done
       - name: Align fork tag and publish release
         env:
           VERSION: ${{ steps.upstream.outputs.tag }}
@@ -47,11 +59,11 @@ jobs:
           # This is the fork's tag, not openai/tunnel-client's tag.
           git push --force origin "refs/tags/${VERSION}"
           if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${VERSION}" dist/tunnel-client-darwin-amd64.zip --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release upload "${VERSION}" dist/tunnel-client-*.zip --clobber --repo "${GITHUB_REPOSITORY}"
           else
-            gh release create "${VERSION}" dist/tunnel-client-darwin-amd64.zip \
+            gh release create "${VERSION}" dist/tunnel-client-*.zip \
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
               --title "${VERSION}" \
-              --notes "macOS Intel CLI build from louisje/tunnel-client."
+              --notes "macOS Intel and Linux amd64/arm64 CLI builds from louisje/tunnel-client."
           fi
