@@ -2,9 +2,8 @@ name: Publish fork binaries
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - master
+  schedule:
+    - cron: '17 3 * * *' # Daily 11:17 Asia/Taipei
 
 permissions:
   contents: write
@@ -26,7 +25,28 @@ jobs:
           tag=$(gh api repos/openai/tunnel-client/releases/latest --jq .tag_name)
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Check whether the fork release needs publishing
+        id: check
+        env:
+          VERSION: ${{ steps.upstream.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          assets="$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          for name in tunnel-client-darwin-amd64.zip tunnel-client-linux-amd64.zip tunnel-client-linux-arm64.zip; do
+            if ! grep -Fxq "$name" <<< "$assets"; then
+              echo "needed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "needed=false" >> "$GITHUB_OUTPUT"
+          echo "Release $VERSION already has all three archives; skipping."
       - name: Build fork release archives
+        if: steps.check.outputs.needed == 'true'
         env:
           VERSION: ${{ steps.upstream.outputs.tag }}
           CGO_ENABLED: '0'
@@ -53,6 +73,7 @@ jobs:
             rm -rf "$stage"
           done
       - name: Align fork tag and publish release
+        if: steps.check.outputs.needed == 'true'
         env:
           VERSION: ${{ steps.upstream.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
