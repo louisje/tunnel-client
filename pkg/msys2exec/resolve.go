@@ -15,6 +15,16 @@ func Active() bool {
  return runtime.GOOS == "windows" && (os.Getenv("MSYSTEM") != "" || os.Getenv("MSYS2_ROOT") != "")
 }
 
+// scriptArgument translates a Windows path under MSYS2_ROOT into the
+// POSIX namespace expected by the MSYS2 bash interpreter.
+func scriptArgument(root, script string) string {
+ rel, err := filepath.Rel(root, script)
+ if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+  return "/" + filepath.ToSlash(rel)
+ }
+ return script
+}
+
 // Resolve returns the process command without running it. Native commands keep
 // Go's usual lookup rules; MSYS2 extensionless scripts use their interpreter.
 func Resolve(args []string) (*exec.Cmd, error) {
@@ -52,7 +62,7 @@ func Resolve(args []string) (*exec.Cmd, error) {
   interpreter := strings.ReplaceAll(fields[0], "\\", "/")
   switch interpreter {
   case "/usr/bin/bash", "/bin/bash":
-   return exec.Command(bash, append([]string{name}, args[1:]...)...), nil
+   return exec.Command(bash, append([]string{scriptArgument(root, name)}, args[1:]...)...), nil
   case "/usr/bin/env", "/bin/env":
    if len(fields) >= 2 && fields[1] == "bash" {
     return exec.Command(bash, append([]string{name}, args[1:]...)...), nil
