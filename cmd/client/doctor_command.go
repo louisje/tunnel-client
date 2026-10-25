@@ -644,6 +644,68 @@ func doctorCodexCheck(lookupEnv func(string) (string, bool)) doctorCheck {
 	}
 }
 
+// doctorMSYS2Interpreter resolves MSYS2's POSIX shebang namespace using
+// the script location and the inherited PATH, without assuming a drive or root.
+func doctorMSYS2Interpreter(scriptPath, shebang string, pathEntries []string) []string {
+ args, err := parseStdioCommandArgv(shebang)
+ if err != nil || len(args) == 0 {
+  return []string{"MSYS2 shebang parsing: invalid interpreter"}
+ }
+ posix := strings.ReplaceAll(args[0], "\\", "/")
+ if posix != "/usr/bin/bash" && posix != "/usr/bin/env" && posix != "/bin/bash" && posix != "/bin/env" {
+  return nil
+ }
+ name := "bash.exe"
+ if strings.HasSuffix(posix, "/env") {
+  name = "env.exe"
+ }
+ roots := []string{}
+ seen := map[string]bool{}
+ addRoot := func(root string) {
+  root = filepath.Clean(root)
+  key := strings.ToLower(root)
+  if root != "." && !seen[key] {
+   seen[key] = true
+   roots = append(roots, root)
+  }
+ }
+ // A script inside an MSYS2 installation is the strongest anchor.
+ for dir := filepath.Dir(scriptPath); ; {
+  if info, err := os.Stat(filepath.Join(dir, "usr", "bin", "bash.exe")); err == nil && !info.IsDir() {
+   addRoot(dir)
+  }
+  parent := filepath.Dir(dir)
+  if parent == dir { break }
+  dir = parent
+ }
+ // PATH normally includes <root>/usr/bin in an MSYS2 session.
+ for _, dir := range pathEntries {
+  if strings.EqualFold(filepath.Base(dir), "bin") && strings.EqualFold(filepath.Base(filepath.Dir(dir)), "usr") {
+   addRoot(filepath.Dir(filepath.Dir(dir)))
+  }
+ }
+ for _, root := range roots {
+  interpreter := filepath.Join(root, "usr", "bin", name)
+  if info, err := os.Stat(interpreter); err == nil && !info.IsDir() {
+   out := []string{"MSYS2 root: " + root, "resolved shebang interpreter: " + interpreter}
+   if name == "env.exe" {
+    if len(args) > 1 && args[1] == "bash" {
+     bash := filepath.Join(root, "usr", "bin", "bash.exe")
+     if info, err := os.Stat(bash); err == nil && !info.IsDir() {
+      out = append(out, "resolved env bash: "+bash)
+     } else {
+      out = append(out, "env bash candidate not found: "+bash)
+     }
+    } else {
+     out = append(out, "env arguments require runtime resolution")
+    }
+   }
+   return out
+  }
+ }
+ return []string{"MSYS2 shebang interpreter not resolved from script location or process PATH"}
+}
+
 // doctorStdioExecutableEvidence diagnoses command lookup without launching it.
 // PATH is only summarized: full entries may contain sensitive local information.
 func doctorStdioExecutableEvidence(command string) []string {
@@ -686,6 +748,7 @@ func doctorStdioExecutableEvidence(command string) []string {
 		evidence = append(evidence, "file exists in process PATH: "+candidate)
 		if line, ok, err := readShebangLine(candidate); err == nil && ok {
 			evidence = append(evidence, "script shebang: "+line)
+			evidence = append(evidence, doctorMSYS2Interpreter(candidate, line, paths)...)
 			evidence = append(evidence, "Windows cannot directly execute this extensionless script; an interpreter or native launcher is required")
 		} else if err != nil {
 			evidence = append(evidence, "script inspection failed: "+err.Error())
