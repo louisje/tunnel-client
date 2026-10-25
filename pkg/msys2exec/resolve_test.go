@@ -38,5 +38,5 @@ func TestMSYS2ScriptShebang(t *testing.T) {
  cmd, err := Resolve([]string{"bunpx", "hello"})
  if err != nil { t.Fatal(err) }
  if cmd.Path != filepath.Join(bin, "bash.exe") { t.Fatalf("unexpected executable: %s", cmd.Path) }
- if len(cmd.Args) != 3 || cmd.Args[1] != script || cmd.Args[2] != "hello" { t.Fatalf("unexpected argv: %#v", cmd.Args) }
+ if len(cmd.Args) != 3 || cmd.Args[1] != "/scripts/bunpx" || cmd.Args[2] != "hello" { t.Fatalf("unexpected argv: %#v", cmd.Args) }
 }
