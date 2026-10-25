@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -642,6 +644,57 @@ func doctorCodexCheck(lookupEnv func(string) (string, bool)) doctorCheck {
 	}
 }
 
+// doctorStdioExecutableEvidence diagnoses command lookup without launching it.
+// PATH is only summarized: full entries may contain sensitive local information.
+func doctorStdioExecutableEvidence(command string) []string {
+	args, err := parseStdioCommandArgv(command)
+	if err != nil || len(args) == 0 {
+		return nil
+	}
+	name := args[0]
+	paths := filepath.SplitList(os.Getenv("PATH"))
+	evidence := []string{
+		"host OS: " + runtime.GOOS,
+		fmt.Sprintf("process PATH entries: %d", len(paths)),
+	}
+	if resolved, err := exec.LookPath(name); err == nil {
+		return append(evidence, "native executable lookup: "+resolved)
+	} else {
+		evidence = append(evidence, "native executable lookup: "+err.Error())
+	}
+	if runtime.GOOS != "windows" {
+		return evidence
+	}
+	// Windows LookPath resolves native executables, not extensionless Unix scripts.
+	// Avoid treating every existing extensionless file as launchable.
+	candidates := make([]string, 0, len(paths))
+	if filepath.IsAbs(name) || strings.ContainsAny(name, `/\`) {
+		candidates = append(candidates, name)
+	} else {
+		for _, dir := range paths {
+			if dir == "" {
+				continue
+			}
+			candidates = append(candidates, filepath.Join(dir, name))
+		}
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		evidence = append(evidence, "file exists in process PATH: "+candidate)
+		if line, ok, err := readShebangLine(candidate); err == nil && ok {
+			evidence = append(evidence, "script shebang: "+line)
+			evidence = append(evidence, "Windows cannot directly execute this extensionless script; an interpreter or native launcher is required")
+		} else if err != nil {
+			evidence = append(evidence, "script inspection failed: "+err.Error())
+		}
+		return evidence
+	}
+	return append(evidence, "no exact-name file found in the process PATH directories")
+}
+
 func doctorStdioCommandCheck(command string) doctorCheck {
 	resolved, err := preflightStdioCommand(command)
 	if err != nil {
@@ -650,10 +703,7 @@ func doctorStdioCommandCheck(command string) doctorCheck {
 			Status:  doctorStatusFail,
 			Summary: err.Error(),
 			Why:     "stdio MCP targets are spawned as local child processes during `tunnel-client run`; if the executable is missing or not executable, the daemon stays up but requests through that MCP target fail immediately.",
-			Evidence: []string{
-				command,
-				err.Error(),
-			},
+			Evidence: append([]string{command, err.Error()}, doctorStdioExecutableEvidence(command)...),
 			Next: []string{
 				"install the command or fix the first executable token in mcp.command",
 				"if the command is a script, run chmod +x on the script and ensure its shebang points to an installed interpreter",
