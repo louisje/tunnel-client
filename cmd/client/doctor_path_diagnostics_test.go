@@ -40,3 +40,29 @@ func TestDoctorStdioExecutableEvidenceWindowsScript(t *testing.T) {
   t.Fatalf("missing shebang: %s", evidence)
  }
 }
+
+func TestDoctorMSYS2InterpreterAbsoluteBash(t *testing.T) {
+ root := t.TempDir()
+ bin := filepath.Join(root, "usr", "bin")
+ if err := os.MkdirAll(bin, 0755); err != nil { t.Fatal(err) }
+ bash := filepath.Join(bin, "bash.exe")
+ if err := os.WriteFile(bash, []byte("fake exe"), 0600); err != nil { t.Fatal(err) }
+ script := filepath.Join(root, "home", "user", "outland", "bin", "bunpx")
+ lines := strings.Join(doctorMSYS2Interpreter(script, "/usr/bin/bash", nil), "\n")
+ if !strings.Contains(lines, "MSYS2 root: "+root) || !strings.Contains(lines, "resolved shebang interpreter: "+bash) {
+  t.Fatalf("unexpected resolution: %s", lines)
+ }
+}
+
+func TestDoctorMSYS2InterpreterEnvBashFromPath(t *testing.T) {
+ root := t.TempDir()
+ bin := filepath.Join(root, "usr", "bin")
+ if err := os.MkdirAll(bin, 0755); err != nil { t.Fatal(err) }
+ for _, file := range []string{"bash.exe", "env.exe"} {
+  if err := os.WriteFile(filepath.Join(bin, file), []byte("fake exe"), 0600); err != nil { t.Fatal(err) }
+ }
+ lines := strings.Join(doctorMSYS2Interpreter(filepath.Join(t.TempDir(), "bunpx"), "/usr/bin/env bash", []string{bin}), "\n")
+ if !strings.Contains(lines, "resolved shebang interpreter: "+filepath.Join(bin, "env.exe")) || !strings.Contains(lines, "resolved env bash: "+filepath.Join(bin, "bash.exe")) {
+  t.Fatalf("unexpected env resolution: %s", lines)
+ }
+}
