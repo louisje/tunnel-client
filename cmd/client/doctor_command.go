@@ -645,66 +645,33 @@ func doctorCodexCheck(lookupEnv func(string) (string, bool)) doctorCheck {
 	}
 }
 
-// doctorMSYS2Interpreter resolves MSYS2's POSIX shebang namespace using
-// the script location and the inherited PATH, without assuming a drive or root.
-func doctorMSYS2Interpreter(scriptPath, shebang string, pathEntries []string) []string {
+// doctorMSYS2Interpreter reports the explicitly configured MSYS2 interpreter.
+// It never guesses a root directory from PATH or a script location.
+func doctorMSYS2Interpreter(_ string, shebang string, _ []string) []string {
+ if !msys2exec.Active() { return nil }
+ root := strings.TrimSpace(os.Getenv("MSYS2_ROOT"))
+ if root == "" { return []string{"MSYS2 environment detected but MSYS2_ROOT is not set"} }
+ if !filepath.IsAbs(root) { return []string{"MSYS2_ROOT is not an absolute path: "+root} }
  args, err := parseStdioCommandArgv(shebang)
- if err != nil || len(args) == 0 {
-  return []string{"MSYS2 shebang parsing: invalid interpreter"}
+ if err != nil || len(args) == 0 { return []string{"MSYS2 shebang parsing: invalid interpreter"} }
+ path := strings.ReplaceAll(args[0], "\\", "/")
+ executable := ""
+ switch path {
+ case "/usr/bin/bash", "/bin/bash": executable = "bash.exe"
+ case "/usr/bin/env", "/bin/env": executable = "env.exe"
+ default: return nil
  }
- posix := strings.ReplaceAll(args[0], "\\", "/")
- if posix != "/usr/bin/bash" && posix != "/usr/bin/env" && posix != "/bin/bash" && posix != "/bin/env" {
-  return nil
+ resolved := filepath.Join(root, "usr", "bin", executable)
+ result := []string{"MSYS2 root: "+root, "resolved shebang interpreter: "+resolved}
+ if info, err := os.Stat(resolved); err != nil || info.IsDir() {
+  result = append(result, "interpreter not found: "+resolved)
  }
- name := "bash.exe"
- if strings.HasSuffix(posix, "/env") {
-  name = "env.exe"
+ if executable == "env.exe" && len(args) > 1 && args[1] == "bash" {
+  bash := filepath.Join(root, "usr", "bin", "bash.exe")
+  result = append(result, "resolved env bash: "+bash)
+  if info, err := os.Stat(bash); err != nil || info.IsDir() { result = append(result, "env bash not found: "+bash) }
  }
- roots := []string{}
- seen := map[string]bool{}
- addRoot := func(root string) {
-  root = filepath.Clean(root)
-  key := strings.ToLower(root)
-  if root != "." && !seen[key] {
-   seen[key] = true
-   roots = append(roots, root)
-  }
- }
- // A script inside an MSYS2 installation is the strongest anchor.
- for dir := filepath.Dir(scriptPath); ; {
-  if info, err := os.Stat(filepath.Join(dir, "usr", "bin", "bash.exe")); err == nil && !info.IsDir() {
-   addRoot(dir)
-  }
-  parent := filepath.Dir(dir)
-  if parent == dir { break }
-  dir = parent
- }
- // PATH normally includes <root>/usr/bin in an MSYS2 session.
- for _, dir := range pathEntries {
-  if strings.EqualFold(filepath.Base(dir), "bin") && strings.EqualFold(filepath.Base(filepath.Dir(dir)), "usr") {
-   addRoot(filepath.Dir(filepath.Dir(dir)))
-  }
- }
- for _, root := range roots {
-  interpreter := filepath.Join(root, "usr", "bin", name)
-  if info, err := os.Stat(interpreter); err == nil && !info.IsDir() {
-   out := []string{"MSYS2 root: " + root, "resolved shebang interpreter: " + interpreter}
-   if name == "env.exe" {
-    if len(args) > 1 && args[1] == "bash" {
-     bash := filepath.Join(root, "usr", "bin", "bash.exe")
-     if info, err := os.Stat(bash); err == nil && !info.IsDir() {
-      out = append(out, "resolved env bash: "+bash)
-     } else {
-      out = append(out, "env bash candidate not found: "+bash)
-     }
-    } else {
-     out = append(out, "env arguments require runtime resolution")
-    }
-   }
-   return out
-  }
- }
- return []string{"MSYS2 shebang interpreter not resolved from script location or process PATH"}
+ return result
 }
 
 // doctorStdioExecutableEvidence diagnoses command lookup without launching it.
