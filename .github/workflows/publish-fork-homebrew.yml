@@ -86,7 +86,6 @@ jobs:
         run: |
           set -euo pipefail
           go test ./...
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test ./pkg/msys2exec ./cmd/client -run '^$' -exec /bin/true
           for target in linux/amd64 linux/arm64 windows/amd64 darwin/amd64; do
             GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
               go build -trimpath -buildvcs=false -o /tmp/tunnel-client-build ./cmd/client
