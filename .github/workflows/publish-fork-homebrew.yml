@@ -1,4 +1,4 @@
-name: Publish fork binaries
+name: Merge and publish upstream release
 
 on:
   workflow_dispatch:
@@ -8,12 +8,19 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: upstream-release-merge
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  merge-test-publish:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve upstream stable version
+        with:
+          fetch-depth: 0
+
+      - name: Resolve upstream stable release
         id: upstream
         env:
           GH_TOKEN: ${{ github.token }}
@@ -22,98 +29,123 @@ jobs:
           tag="$(gh api repos/openai/tunnel-client/releases/latest --jq .tag_name)"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
           git fetch --no-tags https://github.com/openai/tunnel-client.git "refs/tags/$tag"
-          upstream_sha="$(git rev-parse "FETCH_HEAD^{commit}")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "sha=$upstream_sha" >> "$GITHUB_OUTPUT"
-      - name: Merge upstream release into temporary build branch
-        id: source
+          echo "sha=$(git rev-parse 'FETCH_HEAD^{commit}')" >> "$GITHUB_OUTPUT"
+
+      - name: Check published version and ancestry
+        id: state
         env:
-          VERSION: ${{ steps.upstream.outputs.tag }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin master
+          git switch master
+          git reset --hard origin/master
+          if git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD; then
+            if [[ "$(tr -d '\r\n' < pkg/version/VERSION)" == "${TAG#v}" ]]; then
+              echo "needed=false" >> "$GITHUB_OUTPUT"
+              echo "Fork already contains upstream $TAG at the correct version."
+              exit 0
+            fi
+            echo "::error::Upstream $TAG is merged but VERSION disagrees; investigate before publishing."
+            exit 1
+          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into candidate
+        if: steps.state.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
           UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "fork-build-${GITHUB_RUN_ID}"
+          git switch -c "upstream-candidate-${GITHUB_RUN_ID}"
           if ! git merge --no-edit "$UPSTREAM_SHA"; then
-            echo "::error::Cannot safely merge upstream $VERSION into fork; manual conflict resolution required."
+            echo "::error::Upstream $TAG merge conflicts; leaving master and VERSION unchanged."
             git merge --abort || true
             exit 1
           fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # A release VERSION is only prepared on the isolated candidate.
+          printf '%s\n' "${TAG#v}" > pkg/version/VERSION
+          git add pkg/version/VERSION
+          if ! git diff --cached --quiet; then
+            git commit -m "Align version after merging upstream $TAG"
+          fi
+
       - uses: actions/setup-go@v5
+        if: steps.state.outputs.needed == 'true'
         with:
           go-version-file: go.mod
           cache: true
-      - name: Check whether the fork release needs publishing
-        id: check
-        env:
-          VERSION: ${{ steps.upstream.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
+
+      - name: Test merged candidate
+        if: steps.state.outputs.needed == 'true'
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          assets="$(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
-          git fetch --no-tags origin "refs/tags/$VERSION" 2>/dev/null || true
-          existing_tag_sha="$(git rev-parse -q --verify "refs/tags/$VERSION^{commit}" 2>/dev/null || true)"
-          if [[ -n "$existing_tag_sha" && "$(git rev-parse "$existing_tag_sha^{tree}")" != "$(git rev-parse "${{ steps.source.outputs.sha }}^{tree}")" ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          for name in tunnel-client-darwin-amd64.zip tunnel-client-linux-amd64.zip tunnel-client-linux-arm64.zip; do
-            if ! grep -Fxq "$name" <<< "$assets"; then
-              echo "needed=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          go test ./...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go test ./pkg/msys2exec ./cmd/client -run '^$' -exec /bin/true
+          for target in linux/amd64 linux/arm64 windows/amd64 darwin/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
+              go build -trimpath -buildvcs=false -o /tmp/tunnel-client-build ./cmd/client
           done
-          echo "needed=false" >> "$GITHUB_OUTPUT"
-          echo "Release $VERSION already has all three archives; skipping."
-      - name: Build fork release archives
-        if: steps.check.outputs.needed == 'true'
+
+      - name: Publish merged source to master
+        if: steps.state.outputs.needed == 'true'
+        id: source
+        run: |
+          set -euo pipefail
+          # Never force-push; reject a concurrent change to master.
+          git push origin HEAD:refs/heads/master
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archives from verified source
+        if: steps.state.outputs.needed == 'true'
         env:
-          VERSION: ${{ steps.upstream.outputs.tag }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
-          version="${VERSION#v}"
           mkdir -p dist
-
-          for platform in darwin/amd64 linux/amd64 linux/arm64; do
-            goos="${platform%/*}"
-            goarch="${platform#*/}"
-            archive="tunnel-client-${goos}-${goarch}.zip"
+          for target in darwin/amd64 linux/amd64 linux/arm64 windows/amd64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            suffix=""
+            if [[ "$GOOS" == "windows" ]]; then suffix=".exe"; fi
             stage="$(mktemp -d)"
-
-            GOOS="$goos" GOARCH="$goarch" go build -trimpath -buildvcs=false \
-              -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${{ steps.source.outputs.sha }} -X github.com/openai/tunnel-client/pkg/version.Flavor=full -X github.com/openai/tunnel-client/pkg/version.semanticVersion=${version}" \
-              -o "$stage/tunnel-client" ./cmd/client
-
-            (
-              cd "$stage"
-              sha256sum tunnel-client > SHA256SUMS
-              zip -9 "$GITHUB_WORKSPACE/dist/$archive" tunnel-client SHA256SUMS
-            )
+            GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -buildvcs=false \
+              -ldflags "-s -w -X github.com/openai/tunnel-client/pkg/version.GitSHA=${SOURCE_SHA} -X github.com/openai/tunnel-client/pkg/version.Flavor=full" \
+              -o "$stage/tunnel-client$suffix" ./cmd/client
+            ( cd "$stage"; sha256sum "tunnel-client$suffix" > SHA256SUMS; zip -9 "$GITHUB_WORKSPACE/dist/tunnel-client-${GOOS}-${GOARCH}.zip" "tunnel-client$suffix" SHA256SUMS )
             rm -rf "$stage"
           done
-      - name: Align fork tag and publish release
-        if: steps.check.outputs.needed == 'true'
+
+      - name: Tag and publish verified merge
+        if: steps.state.outputs.needed == 'true'
         env:
-          VERSION: ${{ steps.upstream.outputs.tag }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git tag -f "${VERSION}" "${{ steps.source.outputs.sha }}"
-          # This is the fork's tag, not openai/tunnel-client's tag.
-          git push --force origin "refs/tags/${VERSION}"
-          if gh release view "${VERSION}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release upload "${VERSION}" dist/tunnel-client-*.zip --clobber --repo "${GITHUB_REPOSITORY}"
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            current="$(git rev-parse "refs/tags/$TAG^{commit}")"
+            if [[ "$current" != "$SOURCE_SHA" ]]; then
+              echo "::error::Existing fork tag $TAG points to $current; refusing to rewrite history."
+              exit 1
+            fi
           else
-            gh release create "${VERSION}" dist/tunnel-client-*.zip \
-              --repo "${GITHUB_REPOSITORY}" \
-              --verify-tag \
-              --title "${VERSION}" \
-              --notes "macOS Intel and Linux amd64/arm64 builds from the fork merged with upstream ${VERSION}. Source: ${{ steps.source.outputs.sha }}."
+            git tag "$TAG" "$SOURCE_SHA"
+            git push origin "refs/tags/$TAG"
           fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Fork release $TAG already exists; refusing to silently replace assets."
+            exit 1
+          fi
+          gh release create "$TAG" dist/tunnel-client-*.zip \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
+            --notes "Verified fork build incorporating upstream $TAG. Source commit: $SOURCE_SHA."
