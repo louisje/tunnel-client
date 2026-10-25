@@ -42,7 +42,10 @@ func TestDoctorStdioExecutableEvidenceWindowsScript(t *testing.T) {
 }
 
 func TestDoctorMSYS2InterpreterAbsoluteBash(t *testing.T) {
+ if runtime.GOOS != "windows" { t.Skip("Windows-specific") }
  root := t.TempDir()
+ t.Setenv("MSYSTEM", "MSYS")
+ t.Setenv("MSYS2_ROOT", root)
  bin := filepath.Join(root, "usr", "bin")
  if err := os.MkdirAll(bin, 0755); err != nil { t.Fatal(err) }
  bash := filepath.Join(bin, "bash.exe")
@@ -55,7 +58,10 @@ func TestDoctorMSYS2InterpreterAbsoluteBash(t *testing.T) {
 }
 
 func TestDoctorMSYS2InterpreterEnvBashFromPath(t *testing.T) {
+ if runtime.GOOS != "windows" { t.Skip("Windows-specific") }
  root := t.TempDir()
+ t.Setenv("MSYSTEM", "MSYS")
+ t.Setenv("MSYS2_ROOT", root)
  bin := filepath.Join(root, "usr", "bin")
  if err := os.MkdirAll(bin, 0755); err != nil { t.Fatal(err) }
  for _, file := range []string{"bash.exe", "env.exe"} {
