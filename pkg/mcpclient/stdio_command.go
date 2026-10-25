@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+
+ "github.com/openai/tunnel-client/pkg/msys2exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -84,7 +86,8 @@ func (t *stdioCommandTransport) Transport(cfg *runtimeconfig.MCPConfig) (*mcp.IO
 		return t.transport, nil
 	}
 
-	cmd := exec.Command(cfg.CommandArgs[0], cfg.CommandArgs[1:]...)
+	cmd, err := msys2exec.Resolve(cfg.CommandArgs)
+ if err != nil { return nil, fmt.Errorf("mcpclient: resolve stdio command: %w", err) }
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("mcpclient: stdio command stdin pipe: %w", err)
