@@ -21,6 +21,7 @@ import (
 
 	"github.com/openai/tunnel-client/pkg/codexplugin"
 	"github.com/openai/tunnel-client/pkg/config"
+ "github.com/openai/tunnel-client/pkg/msys2exec"
 	tclog "github.com/openai/tunnel-client/pkg/log"
 	"github.com/openai/tunnel-client/pkg/oauth"
 	tctransport "github.com/openai/tunnel-client/pkg/transport"
@@ -759,7 +760,14 @@ func doctorStdioExecutableEvidence(command string) []string {
 }
 
 func doctorStdioCommandCheck(command string) doctorCheck {
-	resolved, err := preflightStdioCommand(command)
+ resolved, err := preflightStdioCommand(command)
+ if msys2exec.Active() {
+  args, parseErr := parseStdioCommandArgv(command)
+  if parseErr != nil { err = parseErr } else {
+   cmd, resolveErr := msys2exec.Resolve(args)
+   if resolveErr != nil { err = resolveErr } else if cmd.Err != nil { err = cmd.Err } else { resolved = cmd.Path; err = nil }
+  }
+ }
 	if err != nil {
 		return doctorCheck{
 			ID:      "mcp_command_executable",
