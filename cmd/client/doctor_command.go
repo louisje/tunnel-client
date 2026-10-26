@@ -21,7 +21,7 @@ import (
 
 	"github.com/openai/tunnel-client/pkg/codexplugin"
 	"github.com/openai/tunnel-client/pkg/config"
- "github.com/openai/tunnel-client/pkg/msys2exec"
+ "github.com/openai/tunnel-client/pkg/shell2exec"
 	tclog "github.com/openai/tunnel-client/pkg/log"
 	"github.com/openai/tunnel-client/pkg/oauth"
 	tctransport "github.com/openai/tunnel-client/pkg/transport"
@@ -648,7 +648,7 @@ func doctorCodexCheck(lookupEnv func(string) (string, bool)) doctorCheck {
 // doctorMSYS2Interpreter reports the explicitly configured MSYS2 interpreter.
 // It never guesses a root directory from PATH or a script location.
 func doctorMSYS2Interpreter(_ string, shebang string, _ []string) []string {
- if !msys2exec.Active() { return nil }
+ if !shell2exec.Active() { return nil }
  root := strings.TrimSpace(os.Getenv("MSYS2_ROOT"))
  if root == "" { return []string{"MSYS2 environment detected but MSYS2_ROOT is not set"} }
  if !filepath.IsAbs(root) { return []string{"MSYS2_ROOT is not an absolute path: "+root} }
@@ -728,10 +728,10 @@ func doctorStdioExecutableEvidence(command string) []string {
 
 func doctorStdioCommandCheck(command string) doctorCheck {
  resolved, err := preflightStdioCommand(command)
- if msys2exec.Active() {
+ if shell2exec.Active() {
   args, parseErr := parseStdioCommandArgv(command)
   if parseErr != nil { err = parseErr } else {
-   cmd, resolveErr := msys2exec.Resolve(args)
+   cmd, resolveErr := shell2exec.Resolve(args)
    if resolveErr != nil { err = resolveErr } else if cmd.Err != nil { err = cmd.Err } else { resolved = cmd.Path; err = nil }
   }
  }
