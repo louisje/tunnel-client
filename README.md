@@ -218,6 +218,8 @@ Which value comes from where:
   `tunnel-client admin tunnels create|list|get ...` with `OPENAI_ADMIN_KEY`.
 - `CONTROL_PLANE_API_KEY`: create it in Runtime API keys; this is the key used
   by `tunnel-client doctor` and `tunnel-client run`.
+- For [AWS workload identity](docs/configuration.md#aws-workload-identity), set
+  `CONTROL_PLANE_AWS_IDENTITY_PROVIDER_ID` and `CONTROL_PLANE_AWS_SERVICE_ACCOUNT_ID`.
 - `OPENAI_ADMIN_KEY`: only for `tunnel-client admin tunnels
   list|create|update|delete`. Do not use the admin key for the long-lived
   daemon.
@@ -732,12 +734,17 @@ plugin installed by `tunnel-client codex plugin install`.
 ### Harpoon target templates
 
 Opt-in Harpoon templates let callers provide bounded identifiers for an
-operator-configured HTTPS GET, POST, or PUT operation, such as `/cases/{case_id}` or
+operator-configured GET, POST, or PUT operation, such as `/cases/{case_id}` or
 `/profiles?session-id={session_id}`. The client fixes the destination, method,
 query names, and authentication headers, validates each identifier, and never
 follows redirects. POST/PUT require an explicit body policy for content types,
 byte limits, required or optional bodies, and validation. GET remains bodyless;
 DELETE is unsupported. Existing exact-URL targets continue to work.
+
+Templates use HTTPS by default. An operator can set `allow_loopback_http: true`
+on one template to call a literal loopback IP with a fixed port over HTTP.
+Those calls bypass configured HTTP proxies so local API credentials stay on
+the local connection. The setting does not enable other plaintext targets.
 
 Templates use YAML `config_version: 2` and `template.version: 1`, and execute
 through the shared `call_target` MCP tool without a caller-supplied method.

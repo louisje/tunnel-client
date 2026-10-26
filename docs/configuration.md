@@ -275,6 +275,26 @@ under `actual_config.contents` when present, and the effective startup config.
 API keys, bearer tokens, cookies, shard tokens, URL credentials, and URL query
 secrets are redacted before export.
 
+## AWS workload identity
+
+The tunnel client can use an AWS role to authenticate to the production control plane.
+Register the AWS issuer with OpenAI and map the role to a project service account
+with tunnel read and use access. Set both IDs on the client:
+
+```sh
+CONTROL_PLANE_AWS_IDENTITY_PROVIDER_ID=<provider-id>
+CONTROL_PLANE_AWS_SERVICE_ACCOUNT_ID=<service-account-id>
+```
+
+Leave static API key settings unset. The AWS SDK uses the configured region and
+credential chain, including ECS task credentials. The role needs
+`sts:GetWebIdentityToken` for audience `https://api.openai.com/v1` and a
+300-second assertion. The client exchanges that assertion at
+`https://auth.openai.com/oauth/token`. It keeps the access token in memory
+and refreshes it before expiry while serving `https://api.openai.com`.
+The same configuration is available under `control_plane.aws_identity_provider_id`
+and `control_plane.aws_service_account_id` in YAML.
+
 ## Commands
 
 - `init`: create a validated first-use profile and print the exact next commands.
@@ -979,7 +999,10 @@ Absent, invalid, or oversized context produces no local trace and leaves command
 execution unchanged. The original parent's sampled flag controls recording;
 the client never forces sampling or creates an unrelated root. Each request has
 fixed `tunnel.client.dispatch`, `tunnel.client.mcp`, and
-`tunnel.client.upload` spans. Retries remain inside the response upload span.
+`tunnel.client.upload` spans. Each response POST attempt adds a
+`tunnel.client.upload_attempt` child of the upload span. Its elapsed time covers
+the HTTP request through the returned response or transport error; retry waits
+appear as gaps between attempt spans inside the upload span.
 With `mcp.forward_trace_context` enabled, the MCP span context is forwarded
 through `params._meta`, preserving caller-owned metadata trace fields. Existing
 Per-command forwarded HTTP headers remain byte-for-byte unchanged but do not
@@ -991,9 +1014,21 @@ header-only target retains the original HTTP parent. The target must
 extract that metadata to create its own execution span. Local tracing does not
 inject HTTP tracing headers or propagate baggage or incoming `tracestate`.
 
-JSONL contains only `name`, `trace_id`, `span_id`, `parent_span_id`, `start_time`,
-`end_time`, and `status`. It excludes payloads, prompts, credentials, headers,
+JSONL contains `name`, `trace_id`, `span_id`, `parent_span_id`, `start_time`,
+`end_time`, and OpenTelemetry `status`. Attempt records additionally contain
+`attempt`, `elapsed_ms`, `outcome`, and `http_status` when an HTTP response was
+received. `outcome` is one of `accepted`, `already_fulfilled_or_unknown` (HTTP
+404), `http_error`, `timeout`, `canceled`, `network_error`, or `request_error`.
+The file excludes payloads, prompts, credentials, headers, raw errors,
 arbitrary attributes, resource fields, events, and exception descriptions.
+For example, inspect one run with:
+
+```sh
+jq -r 'select(.name == "tunnel.client.upload_attempt") | [.trace_id, .parent_span_id, .attempt, .elapsed_ms, (.http_status // "-"), .outcome] | @tsv' /private/new-trace.jsonl
+```
+
+This is a local JSONL export, not a collector or OTLP export. Attempt records
+require both opt-in local tracing and a valid sampled command parent, as above.
 An isolated tracing provider leaves the application's global provider unchanged.
 Export runs asynchronously with a 1024-record queue and a 64 MiB file limit.
 Queue saturation drops records instead of delaying responses. A write failure or

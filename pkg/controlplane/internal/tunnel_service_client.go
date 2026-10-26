@@ -32,6 +32,7 @@ import (
 	tcmetrics "github.com/openai/tunnel-client/pkg/metrics"
 	"github.com/openai/tunnel-client/pkg/runtimeconfig"
 	"github.com/openai/tunnel-client/pkg/tlsconfig"
+	"github.com/openai/tunnel-client/pkg/tracing"
 	tctransport "github.com/openai/tunnel-client/pkg/transport"
 	"github.com/openai/tunnel-client/pkg/tunnelctx"
 	"github.com/openai/tunnel-client/pkg/types"
@@ -69,7 +70,6 @@ type TunnelServiceClient struct {
 	managedCloudflareEndpoint      *url.URL
 	logger                         *slog.Logger
 	tunnelID                       types.TunnelID
-	apiKey                         string
 	userAgent                      string
 	pollTimeout                    time.Duration
 	initialPollTimeout             time.Duration
@@ -107,11 +107,13 @@ func NewTunnelServiceClient(ctx context.Context, cfg *runtimeconfig.ControlPlane
 	if cfg.TunnelID == "" {
 		return nil, errors.New("controlplane client: control-plane.tunnel-id is required")
 	}
-	if cfg.APIKey == "" {
-		return nil, errors.New("controlplane client: control-plane.api-key is required")
-	}
-	if err := runtimeconfig.ValidateControlPlaneAPIKey(cfg.APIKey); err != nil {
-		return nil, fmt.Errorf("controlplane client: %w", err)
+	if cfg.TokenProvider == nil {
+		if cfg.APIKey == "" {
+			return nil, errors.New("controlplane client: control-plane.api-key is required unless using AWS workload identity")
+		}
+		if err := runtimeconfig.ValidateControlPlaneAPIKey(cfg.APIKey); err != nil {
+			return nil, fmt.Errorf("controlplane client: %w", err)
+		}
 	}
 	if meterProvider == nil {
 		return nil, errors.New("controlplane client: meter provider is required")
@@ -157,7 +159,6 @@ func NewTunnelServiceClient(ctx context.Context, cfg *runtimeconfig.ControlPlane
 		managedCloudflareEndpoint:      managedCloudflareEndpoint,
 		logger:                         logger,
 		tunnelID:                       cfg.TunnelID,
-		apiKey:                         cfg.APIKey,
 		userAgent:                      version.UserAgent,
 		pollTimeout:                    pollTimeout,
 		initialPollTimeout:             cfg.InitialPollTimeoutOrDefault(),
@@ -172,6 +173,13 @@ func NewTunnelServiceClient(ctx context.Context, cfg *runtimeconfig.ControlPlane
 		managedCloudflareRetryAttempts: defaultManagedCloudflareRetryAttempts,
 		newManagedCloudflareBackoff:    newControlPlaneBackoff,
 		retrySleep:                     sleepWithContext,
+	}
+	if cfg.TokenProvider != nil {
+		// Do not attach a fresh bearer token to an HTTP redirect. Wrong-cluster
+		// responses use the tunnel routing protocol rather than HTTP redirects.
+		stopRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		client.client.CheckRedirect = stopRedirect
+		client.secretClient.CheckRedirect = stopRedirect
 	}
 	logger.InfoContext(ctx, "TunnelServiceClient created",
 		slog.String("tunnel_id", client.tunnelID.String()),
@@ -577,13 +585,13 @@ func buildControlPlaneHTTPTransportWithLogging(cfg *runtimeconfig.ControlPlaneCo
 	// A poll body can contain rich-header credentials, and the response body
 	// can contain results from the same invocation. Exclude both directions
 	// from raw capture even when the operator enables unsafe HTTP debugging.
-	if includeRawHTTPLogging && !cfg.SuppressRawHTTPLogging {
+	if includeRawHTTPLogging && !cfg.SuppressRawHTTPLogging && cfg.TokenProvider == nil {
 		base = tclog.NewRoundTripper(base, logger, loggingCfg, tclog.ComponentControlPlane)
 	}
 
 	return newControlPlaneRoundTripper(
 		base,
-		cfg.APIKey,
+		cfg.BearerToken,
 		version.UserAgent,
 		cfg.OrganizationID,
 		cfg.MCPServerInfoHeader,
@@ -697,9 +705,13 @@ func (c *TunnelServiceClient) PostResponse(ctx context.Context, requestID types.
 		}
 
 		c.deliveryHealth.Attempt(attempt > 1)
+		finishAttemptTrace := tracing.StartUploadAttempt(ctx, attempt)
 		resp, err := c.client.Do(attemptReq)
 		if err != nil {
 			category, status := healthFailure(err)
+			if finishAttemptTrace != nil {
+				finishAttemptTrace(0, category)
+			}
 			healthStatus = status
 			c.deliveryHealth.AttemptFailed(c.nowTime(), category, status)
 			// A notification remains non-final after tunnel-service accepts it. Once
@@ -712,6 +724,16 @@ func (c *TunnelServiceClient) PostResponse(ctx context.Context, requestID types.
 				return tunnelServiceRequestID, retryWaitError(ctx)
 			}
 			continue
+		}
+		if finishAttemptTrace != nil {
+			outcome := "http_error"
+			switch resp.StatusCode {
+			case http.StatusOK:
+				outcome = "accepted"
+			case http.StatusNotFound:
+				outcome = "already_fulfilled_or_unknown"
+			}
+			finishAttemptTrace(resp.StatusCode, outcome)
 		}
 
 		if id, ok := types.NewTunnelServiceRequestIDFromHeader(resp.Header); ok {

@@ -33,13 +33,13 @@
   "baselineScope": "canonical six-platform staged payload union",
   "documents": {
     "tunnel-client.spdx.json": {
-      "sha256": "9705ebc51cd5a25ccec558ce5f1facc29cd2802b6a07a07ee2bbaf48e749551f"
+      "sha256": "9bf9f8640311964b1d0e3d233c27e10e38d0a29a59220b9f127d27a07666b5a8"
     },
     "tunnel-client-runtime.spdx.json": {
-      "sha256": "542729b9dc177ebac913497146d499eb25bfdb873b03d8fd8daf7be70033374f"
+      "sha256": "d6640d4b3646745e75887b8b6c77e490ff2c062a0d1bda0282425591e6f50c2f"
     },
     "tunnel-client-runtime-cloudflared.spdx.json": {
-      "sha256": "b43a8feeef54328a3efc2b1f61910d00b80ddc2bb3abb34634806b0e80af6a17"
+      "sha256": "c8723750b5213c5ab24cf0c163893b0f22137fa719648654a5733a7c1d8a026f"
     }
   }
 }
