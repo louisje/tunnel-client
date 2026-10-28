@@ -308,6 +308,16 @@ func lookupEnvWithFileValues(lookupEnv func(string) (string, bool), values *file
 	if values == nil || len(values.Env) == 0 {
 		return lookupEnv
 	}
+	// Explicit profile values override ambient environment values. Regular
+	// config files retain their existing environment-first precedence.
+	if values.ProfileName != "" || values.ProfileFile {
+		return func(key string) (string, bool) {
+			if val, ok := values.Env[key]; ok {
+				return val, true
+			}
+			return lookupEnv(key)
+		}
+	}
 	return func(key string) (string, bool) {
 		if val, ok := lookupEnv(key); ok {
 			return val, true

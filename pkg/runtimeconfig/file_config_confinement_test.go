@@ -34,11 +34,7 @@ func TestExplicitEmptyLogFileUsesInheritedOutput(t *testing.T) {
 				env := lookupEnvMap(values)
 				cfg, err := Load(args, flavor, env)
 				require.NoError(t, err)
-				expectedFile := envFile
-				if expectedFile == "" {
-					expectedFile = "/profile-log.jsonl"
-				}
-				require.Equal(t, expectedFile, cfg.Logging.File)
+				require.Equal(t, "/profile-log.jsonl", cfg.Logging.File, "profile log path must override ambient LOG_FILE")
 				cfg, err = Load(append(args, "--log.file", ""), flavor, env)
 				require.NoError(t, err)
 				require.Empty(t, cfg.Logging.File, "explicit stdout must override both profile and environment paths")
@@ -98,7 +94,7 @@ func TestLoadNamedProfileConfinesSymlinks(t *testing.T) {
 				}
 				require.NoError(t, err)
 				require.Equal(t, filepath.Join(selected, tc.profile+".yaml"), cfg.Runtime.ConfigFile)
-				require.Equal(t, "env-control-key", cfg.ControlPlane.APIKey)
+				require.Equal(t, "yaml-control-key", cfg.ControlPlane.APIKey, "profile API key must override ambient environment")
 			})
 		}
 	}
