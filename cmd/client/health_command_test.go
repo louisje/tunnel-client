@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +232,9 @@ func TestHealthCommandRequiresControlPlanePollAcceptsMetricAfterOversizedPrefix(
 }
 
 func TestHealthCommandWithUnixSocketURLFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix health sockets are unsupported on Windows")
+	}
 	t.Parallel()
 
 	socketPath := shortSocketPath(t, "tunnel-client-health-command-*.sock")

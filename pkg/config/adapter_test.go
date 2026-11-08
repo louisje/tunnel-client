@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -65,6 +66,7 @@ var (
 		"HARPOON_HTTP_PROXY",
 		"HARPOON_MAX_REDIRECTS",
 		"HARPOON_MAX_RESPONSE_BYTES",
+		"HARPOON_OAUTH_FORWARD_ORIGINS",
 		"HARPOON_TARGETS",
 		"HEALTH_LISTEN_ADDR",
 		"HEALTH_UNIX_SOCKET",
@@ -85,6 +87,7 @@ var (
 		"MCP_MAX_CONCURRENT_REQUESTS",
 		"MCP_SERVER_URL",
 		"MCP_STARTUP_WAIT_TIMEOUT",
+		"MCP_STDIO_FAILURE_POLICY",
 		"MCP_STDIO_SEND_INITIALIZED_NOTIFICATION",
 		"OPENAI_API_KEY",
 		"PID_FILE",
@@ -590,6 +593,9 @@ func TestFullAndRuntimeSharedProductionInputsParity(t *testing.T) {
 	})
 
 	t.Run("profile secret references TLS and mounted paths", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("relative paths across temporary and working directory volumes are not portable on Windows")
+		}
 		t.Parallel()
 		certPath, keyPath := writeAdapterClientCertificate(t)
 		apiKeyPath := writeAdapterSecret(t, adapterTestAPIKey+"\n")
@@ -773,6 +779,7 @@ func TestFullAndRuntimeFlavorsSharedEnvironmentParity(t *testing.T) {
 				"MCP_EXTRA_HEADERS":                       "X-MCP: mcp",
 				"MCP_DISCOVERY_EXTRA_HEADERS":             "X-Discovery: discovery",
 				"MCP_STARTUP_WAIT_TIMEOUT":                "2s",
+				"MCP_STDIO_FAILURE_POLICY":                "exit",
 				"MCP_STDIO_SEND_INITIALIZED_NOTIFICATION": "true",
 				"MCP_FORWARD_TRACE_CONTEXT":               "true",
 				"MCP_CONNECTION_MAX_TTL":                  "30s",
@@ -780,6 +787,7 @@ func TestFullAndRuntimeFlavorsSharedEnvironmentParity(t *testing.T) {
 				"HARPOON_TARGETS":                         "label=auth,url=https://auth.example.invalid/token",
 				"HARPOON_ALLOW_PLAINTEXT_HTTP":            "false",
 				"HARPOON_MAX_RESPONSE_BYTES":              "2048",
+				"HARPOON_OAUTH_FORWARD_ORIGINS":           "https://auth.example.invalid\nhttps://metadata.example.invalid:8443",
 				"HARPOON_MAX_REDIRECTS":                   "3",
 				"HARPOON_ADDITIONAL_TRANSPORTS":           "http-streamable",
 				"HARPOON_HOSTS_INCLUDE_SUFFIX":            "internal.example;corp.example",
@@ -1283,6 +1291,7 @@ func runtimeCoreFromFull(cfg *Config) runtimeconfig.Config {
 			MaxRedirects:         cfg.Harpoon.MaxRedirects,
 			AdditionalTransports: cfg.Harpoon.AdditionalTransports,
 			Targets:              cfg.Harpoon.Targets,
+			OAuthForwardOrigins:  cfg.Harpoon.OAuthForwardOrigins,
 			HostClassifier:       cfg.Harpoon.HostClassifier,
 			HTTPProxy:            cfg.Harpoon.HTTPProxy,
 			HTTPProxySource:      cfg.Harpoon.HTTPProxySource,

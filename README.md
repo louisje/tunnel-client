@@ -144,7 +144,8 @@ tool and connects it to the OpenAI Tunnel control plane.
 - **Deployment guides**: [`docs/deployment/overview.md`](docs/deployment/overview.md)
 - **Bundled Cloudflare companion**:
   [`docs/deployment/cloudflared.md`](docs/deployment/cloudflared.md)
-- **Troubleshooting**: [`docs/troubleshooting.md`](docs/troubleshooting.md)
+- **Troubleshooting**: [`docs/troubleshooting.md`](docs/troubleshooting.md), including
+  [DNS diagnostic logs for Android / Termux](docs/troubleshooting.md#dns-failures-and-android--termux).
 - **Development & testing**: [`docs/development.md`](docs/development.md)
 - **In-memory Go SDK example**:
   [`examples/go-sdk-inmemory`](examples/go-sdk-inmemory)
@@ -171,7 +172,10 @@ tunnel-client help quickstart
 
 The Formula installs the matching `tunnel-client`, bundled `cloudflared`,
 and companion manifest together, while exposing only the `tunnel-client`
-command. For Docker, Kubernetes, or VM deployments, see
+command. It also installs Bash, Zsh, and Fish completions for that version.
+If your shell does not load them automatically, follow
+[Homebrew's shell completion setup](https://docs.brew.sh/Shell-Completion).
+For Docker, Kubernetes, or VM deployments, see
 [`docs/deployment/overview.md`](docs/deployment/overview.md).
 
 To generate the shareable guide output locally:
@@ -181,6 +185,88 @@ make end-user-guide-screenshots
 make end-user-guide-html
 make end-user-guide-slides
 ```
+
+### Start at macOS login
+
+The Homebrew Formula supports `brew services`. It supervises
+`tunnel-client run` using the profile at
+`$(brew --prefix)/etc/tunnel-client.yaml`, starts at login, and restarts the
+runtime after it exits. Installation and upgrades do not create or replace
+that profile.
+
+First, select the profile you already configured. If it belongs to a managed
+alias, find its `profile_path` with `tunnel-client runtimes status <alias> --json`,
+then run `tunnel-client runtimes stop <alias>` before starting the service.
+Copy the profile to the service location, preserving your custom settings:
+
+```bash
+service_profile="$(brew --prefix)/etc/tunnel-client.yaml"
+if [ -e "$service_profile" ]; then
+  cp -p "$service_profile" "$service_profile.backup.$(date +%Y%m%d%H%M%S)"
+fi
+install -m 600 /absolute/path/to/existing-profile.yaml "$service_profile"
+```
+
+Use absolute paths in this profile, including paths to MCP executables,
+working directories, and secret files. The service includes Homebrew's `bin`
+and `sbin` on `PATH`, but does not load your interactive shell configuration.
+Replace shell-only `env:` references with persistent references such as this
+existing profile field:
+
+```yaml
+control_plane:
+  api_key: file:/Users/YOU/.config/tunnel-client/runtime.key
+```
+
+Store the runtime API key in that file with permissions `0600`; keep its
+directory private too. The service definition contains the profile path,
+not the key. Validate the profile, then start the service as your logged-in
+user, without `sudo`:
+
+```bash
+tunnel-client doctor --profile-file "$(brew --prefix)/etc/tunnel-client.yaml"
+brew services start openai/tools/tunnel-client
+brew services info openai/tools/tunnel-client
+tunnel-client health --url http://127.0.0.1:8080 --json
+```
+
+The health command above uses the default listener. If your profile configures
+a different health address or a `health.url_file`, use that address or
+`health --url-file /absolute/path/to/health-url` instead. An active service
+alone does not mean the tunnel is ready. Inspect
+`$(brew --prefix)/var/log/tunnel-client.log` and any `log.file` destination in
+your profile if startup fails.
+
+Use Homebrew to manage this runtime:
+
+```bash
+# Reload the profile/key or pick up the installed version after a brew upgrade.
+brew services restart openai/tools/tunnel-client
+
+# Stop the runtime and disable automatic login startup.
+brew services stop openai/tools/tunnel-client
+```
+
+The service uses Homebrew's stable `opt` path across upgrades. The CLI's
+`runtimes status` and `runtimes stop` commands manage its own detached
+processes; they do not discover or control the Homebrew service. Do not run
+`runtimes connect` for the same tunnel while the service is active: that
+command writes a generated profile and starts a separate runtime. Stop the
+service before switching back to CLI management. Keep only one runtime active
+for the tunnel during the switch, especially for stdio or stateful MCP servers.
+
+The per-user macOS service runs during your login session, not before login
+or after logout. Sleep suspends the Mac's work; wake allows the runtime's
+network retries to resume. Homebrew's launchd service restarts an exited
+process, but does not restart one merely because readiness fails. Start a
+local HTTP MCP server through its own supervisor. For a server that starts
+later, set `mcp.startup_wait_timeout` (for example, `2m`) in the profile to
+allow startup connection retries. If that window expires, restart the service
+after the MCP server is available; the process can remain alive with its
+startup probe failed. After a server restart, check readiness and logs;
+existing MCP sessions may need to be initialized again. For a stdio target,
+the runtime owns the MCP child. Do not assume interrupted tool calls are
+replayed.
 
 ## For Codex / Copilot
 
@@ -192,8 +278,8 @@ lifecycle work, use the native `tunnel-client runtimes ...` and
 
 Supervision choice:
 
-- Use `tunnel-client run ...` when you intentionally want a foreground daemon
-  attached to the current terminal.
+- Use `tunnel-client run ...` for a foreground daemon attached to the current
+  terminal or supervised by the OS; see [macOS login startup](#start-at-macos-login).
 - For a long-lived local runtime managed by Codex, prefer
   `tunnel-client runtimes connect ...`. Do not use `nohup` or `disown` as the
   tunnel-client supervision path.
@@ -255,6 +341,16 @@ restart. Each instance launches a separate MCP child, and initialization and
 later requests can reach different children. Stop the old instance before
 starting its replacement, or use distinct tunnel IDs for independent instances.
 See [stdio deployment limits](docs/configuration.md#stdio-deployment-limits).
+
+By default, `tunnel-client` restarts a supervised stdio child after an
+unexpected exit, stdout EOF, or stdin write failure. Calls in progress may
+fail, and legacy callers must initialize the replacement child before retrying.
+If your deployment uses an external process supervisor to restart the whole
+client, set `--mcp.stdio-failure-policy=exit`,
+`MCP_STDIO_FAILURE_POLICY=exit`, or YAML `mcp.stdio_failure_policy: exit`.
+That setting restores nonzero client exit on these failures; intentional
+shutdown still exits successfully. Remove the new flag or YAML key before
+downgrading to a version that does not recognize it.
 
 Stdio initialization is checked automatically. Legacy calls require a successful
 `initialize` exchange followed by `notifications/initialized`; premature calls
@@ -709,6 +805,13 @@ plugin installed by `tunnel-client codex plugin install`.
   `mcp.oauth_trusted_origins`. See the [configuration reference](docs/configuration.md#mcp-server)
   for trust boundaries and staged upgrade guidance. Full-client profile editing
   also requires a [supported editor command](docs/profile-editor.md).
+- Forwarding OAuth requests to a separate HTTPS origin requires an independent
+  opt-in: `--harpoon.oauth-forward-origin`, `HARPOON_OAUTH_FORWARD_ORIGINS`, or
+  `harpoon.oauth_forward_origins`. Discovery trust alone remains insufficient.
+  Approved discovered endpoints retain their OAuth roles and groups; other
+  origins remain subject to the existing registration policy. See
+  [OAuth forwarding origins](docs/configuration.md#oauth-forwarding-origins)
+  for exact-origin matching and deployment guidance.
 - Metadata is accepted even when `issuer` differs from
   `authorization_servers[0]` (external IdP issuer URLs are supported), with
   mismatch diagnostics preserved in logs/state.
@@ -789,10 +892,13 @@ make admin-ui
   integration tests. TCP ingress is the default and prints `mcp_url`; pass
   `--listen-unix-socket PATH` for external MCP ingress over a Unix socket. Its
   `--backend auto|go|rust` flag defaults to `auto`, and
-  `--engine-queue-backend inmem|redis` defaults to `inmem`. Ordinary public
-  builds use the Go in-memory backend; `rust` and Redis require a binary with
-  the optional linked Rust adapter. Redis also needs `--engine-redis-url` or
-  `TUNNEL_ENGINE_REDIS_URL`.
+  `--engine-queue-backend inmem` is the supported queue setting. Ordinary public
+  builds use the Go in-memory backend; `rust` requires a binary with the
+  optional linked Rust adapter. Rust Redis support has been removed. The
+  deprecated `--engine-redis-url` flag, nonempty `TUNNEL_ENGINE_REDIS_URL`, or an
+  explicit Redis backend selection returns a removal error before startup.
+  Remove retired settings and use `inmem` only for local, ephemeral work, or
+  keep the prior version for Redis-backed setups.
 - `tunnel-client init` writes a validated first-use profile.
 - `tunnel-client doctor` validates config and explains what is missing before
   startup.

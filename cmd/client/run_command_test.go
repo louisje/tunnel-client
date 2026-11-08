@@ -349,7 +349,12 @@ func TestRunEmbeddedStatelessMCPStubOverridesInheritedMain(t *testing.T) {
 					env["MCP_COMMAND"] = "channel=env-tools,command=python env-tools.py"
 					env["MCP_SERVER_URL"] += "\nchannel=main,url=https://original.example/mcp"
 				}
-				wantChannels = []string{"env-http", "env-tools", "main"}
+				if tc.source == "profile-env" {
+					// Explicit profiles take precedence over ambient MCP environment targets.
+					wantChannels = []string{"file-http", "file-tools", "main"}
+				} else {
+					wantChannels = []string{"env-http", "env-tools", "main"}
+				}
 			}
 			opts := runEmbeddedMCPStubOptions{Stateless: true, ListenAddr: "127.0.0.1:0"}
 			stub, err := configureRunEmbeddedMCPStub(run, opts)

@@ -679,6 +679,9 @@ func executeCommandWithCodexTimeouts(t *testing.T, codexBin string, env map[stri
 
 func writeFakeCodexScript(t *testing.T, env ...string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex CLI uses a Unix shell script; Windows requires a native test launcher")
+	}
 	var assignments strings.Builder
 	for _, entry := range env {
 		key, value, ok := strings.Cut(entry, "=")

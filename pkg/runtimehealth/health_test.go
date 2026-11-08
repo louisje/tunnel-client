@@ -144,6 +144,9 @@ func TestListenHealthUnixSocketRejectsNonSocketPath(t *testing.T) {
 }
 
 func TestListenHealthUnixSocketRemovesStaleSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test requires a Unix environment")
+	}
 	t.Parallel()
 
 	socketPath := shortSocketPath(t, "tunnel-client-health-stale-*.sock")

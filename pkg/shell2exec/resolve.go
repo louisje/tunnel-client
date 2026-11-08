@@ -66,7 +66,7 @@ func Resolve(args []string) (*exec.Cmd, error) {
    return exec.Command(bash, append([]string{scriptArgument(root, name)}, args[1:]...)...), nil
   case "/usr/bin/env", "/bin/env":
    if len(fields) >= 2 && fields[1] == "bash" {
-    return exec.Command(bash, append([]string{name}, args[1:]...)...), nil
+    return exec.Command(bash, append([]string{scriptArgument(root, name)}, args[1:]...)...), nil
    }
   }
  }

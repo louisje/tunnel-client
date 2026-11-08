@@ -723,10 +723,17 @@ func TestAppFailsToStartWithBusyHealthPort(t *testing.T) {
 
 	err = app.Start(ctx)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "address already in use")
+	if runtime.GOOS == "windows" {
+		require.Contains(t, err.Error(), "Only one usage of each socket address")
+	} else {
+		require.Contains(t, err.Error(), "address already in use")
+	}
 }
 
 func TestAppServesHealthAndAdminOverUnixSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix health sockets are unsupported on Windows")
+	}
 	t.Parallel()
 	tempDir := t.TempDir()
 	socketPath := shortSocketPath(t, "tunnel-client-main-health-*.sock")

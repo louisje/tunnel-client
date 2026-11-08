@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -366,7 +367,20 @@ func (b *Bridge) Stop(ctx context.Context) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	_ = cmd.Process.Signal(syscall.SIGTERM)
+	if runtime.GOOS == "windows" {
+		// Windows does not implement Unix SIGTERM. Closing stdin lets a
+		// cooperative app-server exit; otherwise terminate and reap it.
+		if waitDone != nil {
+			select {
+			case <-waitDone:
+				return nil
+			default:
+			}
+		}
+		_ = cmd.Process.Kill()
+	} else {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+	}
 	if waitDone == nil {
 		return nil
 	}

@@ -280,7 +280,11 @@ func TestProfilesAddPreservesSelectedRootAndExternalSource(t *testing.T) {
 	cwd, err := os.Getwd()
 	require.NoError(t, err)
 	relativeDir, err := filepath.Rel(cwd, selectedDir)
-	require.NoError(t, err)
+	if runtime.GOOS == "windows" {
+		relativeDir = selectedDir
+	} else {
+		require.NoError(t, err)
+	}
 	source := filepath.Join(dir, "source.yaml")
 	data := sampleMCPWithDCRProfile("tunnel_0123456789abcdef0123456789abcdef", "https://mcp.example/mcp", "")
 	require.NoError(t, os.WriteFile(source, data, 0o600))

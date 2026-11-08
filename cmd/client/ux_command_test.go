@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -220,7 +221,7 @@ func TestInitCanUseExplicitStdioSample(t *testing.T) {
 		"--profile", "local-stdio",
 		"--profile-dir", profileDir,
 		"--tunnel-id", "tunnel_0123456789abcdef0123456789abcdef",
-		"--mcp-command", testExecutableCommand(),
+		"--mcp-command", strconv.Quote(testExecutableCommand()),
 	)
 
 	require.NoError(t, err, stderr)
@@ -228,7 +229,7 @@ func TestInitCanUseExplicitStdioSample(t *testing.T) {
 	data, readErr := os.ReadFile(path)
 	require.NoError(t, readErr)
 	require.NoError(t, config.ValidateProfileBytes(path, data))
-	require.Contains(t, string(data), `command: "`+testExecutableCommand()+`"`)
+	require.Contains(t, string(data), "command: "+strconv.Quote(strconv.Quote(testExecutableCommand())))
 	require.Contains(t, stdout, "Sample: sample_mcp_stdio_local")
 }
 

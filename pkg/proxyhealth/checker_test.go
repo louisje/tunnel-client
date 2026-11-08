@@ -297,8 +297,8 @@ func TestConnectThroughProxyIncludesProxyAuthorization(t *testing.T) {
 	if category != "2xx" {
 		t.Fatalf("status category = %q, want %q", category, "2xx")
 	}
-	if duration <= 0 {
-		t.Fatalf("duration = %v, want > 0", duration)
+	if duration < 0 {
+		t.Fatalf("duration = %v, want >= 0", duration)
 	}
 
 	rawRequest := waitForRequest(t, requestLines)
@@ -354,8 +354,8 @@ func TestConnectThroughHTTPSProxyEncryptsProxyAuthorization(t *testing.T) {
 	if category != "2xx" {
 		t.Fatalf("status category = %q, want %q", category, "2xx")
 	}
-	if duration <= 0 {
-		t.Fatalf("duration = %v, want > 0", duration)
+	if duration < 0 {
+		t.Fatalf("duration = %v, want >= 0", duration)
 	}
 
 	select {

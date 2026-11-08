@@ -237,6 +237,10 @@ mcp:
   connection_max_ttl: 10m
   max_concurrent_requests: 10
 harpoon:
+  # Optional. Authorize discovered OAuth endpoints on a separate HTTPS origin.
+  # Discovery still requires mcp.oauth_trusted_origins above.
+  oauth_forward_origins:
+    - https://auth.example.com
   targets:
     - label: auth
       url: https://auth.example.com
@@ -606,12 +610,26 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
   - Required: yes for the `main` channel (unless `--mcp.server-url` supplies `main`)
   - Legacy form: `--mcp.command="npx -y @org/main-mcp"` (defaults to `main`)
   - Channel-qualified form: `--mcp.command="channel=bar,command=npx -y @org/bar-mcp"`
-  - Behavior: spawns the command once and uses the child process stdin/stdout for MCP frames
+  - Behavior: runs the command as a supervised child and uses its stdin/stdout for MCP frames
   - Deployment limit: multiple active `tunnel-client` instances sharing a
     tunnel ID with stdio bindings are **not supported**. See
     [stdio deployment limits](#stdio-deployment-limits).
   - Note: when using `MCP_COMMAND` with multiple entries, separate entries with
     newlines so semicolons remain part of the command.
+- **Stdio failure policy**
+  - Flag: `--mcp.stdio-failure-policy=restart|exit`
+  - Env: `MCP_STDIO_FAILURE_POLICY`
+  - YAML: `mcp.stdio_failure_policy`
+  - Default: `restart` in all three tunnel-client flavors.
+  - `restart` starts a replacement child after an unexpected exit, stdout EOF,
+    or stdin write failure. In-flight calls can fail; callers must initialize
+    the replacement child before retrying legacy calls.
+  - `exit` makes tunnel-client exit nonzero on those failures so an external
+    process supervisor can restart the whole client. An intentional client
+    shutdown does not trigger either recovery path.
+  - This setting applies to all stdio channel bindings in the instance and has
+    no effect on HTTP MCP bindings. Before downgrading to a client without it,
+    remove its YAML key and CLI flag; older clients reject unknown keys and flags.
 - **Automatic stdio initialization guard**
   - Each request selects its protocol lifecycle automatically; no configuration
     is required. This applies to stdio channels only.
@@ -619,8 +637,9 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
     before the shared child completes a successful `initialize` exchange and
     receives `notifications/initialized`. This prevents requests from reaching
     a stateful stdio server before it is ready.
-  - The caller owns initialization and recovery. The guard does not synthesize
-    `initialize`, replay rejected requests, or initialize a replacement child.
+  - The caller owns initialization and request retry after child recovery. The
+    guard does not synthesize `initialize`, replay rejected requests, or
+    initialize a replacement child.
     The notification shim below can supply `notifications/initialized` after
     the caller's successful `initialize` response.
   - The client reports rejected calls with `status_code: 409`, JSON-RPC code `-32002`, and
@@ -760,6 +779,8 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
   a query, or a fragment. Explicitly trusted private origins are supported.
   This setting authorizes discovery requests only; it does not add forwarding
   targets or expand the scope of configured credentials.
+  To authorize discovered endpoints on a separate origin for forwarding, use
+  the independent [OAuth forwarding allowlist](#oauth-forwarding-origins).
 - When upgrading a configuration that discovers metadata or an authorization
   server on a separate origin, add each expected origin to this list before
   starting the client. For example, an MCP server at
@@ -860,6 +881,31 @@ affinity; it does not implement routing affinity. The
 `--mcp.stdio-send-initialized-notification` option only sends the notification
 after a successful forwarded `initialize` response. It does not initialize
 every replica or make multiple stdio instances safe.
+
+By default, if a stdio child exits unexpectedly, closes stdout, or stops
+accepting stdin writes, `tunnel-client` starts a replacement child. Set
+`--mcp.stdio-failure-policy=exit` to exit nonzero and delegate recovery to an
+external process supervisor. An intentional client shutdown still exits
+successfully.
+
+### Stdio failure policy upgrade and rollback
+
+Deployments that rely on a process supervisor restarting the entire client
+should select `exit` when upgrading to a version with the `restart` default.
+Use `MCP_STDIO_FAILURE_POLICY=exit` while older and newer binaries may read the
+same deployment configuration; add the YAML key or CLI flag only after older
+binaries are no longer used. The `exit` policy remains supported throughout
+this rollout and rollback window. Removing it would require a separate,
+reviewed deprecation and migration plan.
+
+Upgrade one stdio tunnel at a time without overlapping active clients. Before
+promoting an upgraded deployment, verify that an unexpected child failure
+either starts a replacement child under `restart` or exits nonzero under
+`exit`. For `restart`, also verify that legacy callers can initialize the new
+child and complete a subsequent request; requests in flight during failure
+may fail and are not replayed. If that validation fails, select `exit` to
+restore whole-client supervision or roll back the binary. Remove the new YAML
+key or CLI flag before rolling back to a version that does not recognize it.
 
 ## Harpoon MCP (outbound HTTP allowlist)
 
@@ -970,6 +1016,52 @@ later OAuth discovery commands or registry mutations.
   - Env: `HARPOON_HOSTS_INCLUDE_PRIVATE`
   - Default: `true`
   - Behavior: includes RFC1918 IPv4 plus IPv6 ULA (fc00::/7).
+
+### OAuth forwarding origins
+
+Use this independent opt-in when discovered OAuth endpoints on a separate HTTPS
+origin need to be reachable through the tunnel:
+
+```yaml
+mcp:
+  oauth_trusted_origins:
+    - https://auth.example.com
+harpoon:
+  oauth_forward_origins:
+    - https://auth.example.com
+```
+
+- Flag (repeatable): `--harpoon.oauth-forward-origin https://auth.example.com`
+- Env: `HARPOON_OAUTH_FORWARD_ORIGINS` (newline-separated origins)
+- YAML: `harpoon.oauth_forward_origins`
+- Default: empty; existing discovery and registration behavior is unchanged.
+
+Flags replace the environment or YAML list; the environment replaces YAML.
+An explicit empty flag or environment value clears lower-precedence entries.
+Each entry must be an absolute HTTPS origin without credentials, a path
+(except an optional `/`), query, fragment, or IPv6 zone identifier. Matching uses the exact scheme,
+hostname, and effective port. It does not include subdomains or other ports.
+
+The list authorizes registration of discovered OAuth endpoint URLs on those
+origins, preserving their OAuth source, endpoint roles, and group associations.
+It does not register arbitrary URLs, grant discovery trust, widen configured
+credential scope, or relax existing redirect and exact-target checks. The
+discovery-only `mcp.oauth_trusted_origins` setting is still required for separate
+metadata origins. An advertised endpoint on a third origin needs its own
+forwarding approval if the existing registration policy does not admit it.
+
+Include the protected-resource metadata source's origin as well as the required
+authorization-server endpoint origins. Generic `harpoon.targets` have the
+`config` category and do not replace these discovery-generated OAuth records.
+Successful explicit admissions log `inclusion_reason=oauth-forwarding-origin`.
+
+Upgrade every active poller for the tunnel and apply equivalent configuration
+before relying on the new forwarding path. Commands may be consumed by any
+poller; an older client does not gain this capability from the new environment
+variable. Compare startup target counts and catalog digests using the same
+tunnel ID and runtime key, then validate discovery, sign-in, and an authenticated
+MCP call. Older binaries reject the new YAML key and flag; remove those settings
+before downgrading. Downgrading removes the explicit forwarding capability.
 
 ## Local tracing
 

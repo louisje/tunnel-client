@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -646,7 +647,7 @@ func writeBinaryHint(dir string, tunnelClientBinary string) error {
 	if info.IsDir() {
 		return fmt.Errorf("tunnel-client binary path is a directory: %s", resolved)
 	}
-	if info.Mode()&0o111 == 0 {
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
 		return fmt.Errorf("tunnel-client binary is not executable: %s", resolved)
 	}
 	hintPath := filepath.Join(dir, binHintFilename)

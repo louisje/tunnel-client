@@ -136,10 +136,31 @@ class TunnelClient < Formula
   def install
     libexec.install "tunnel-client", "cloudflared", "cloudflared-manifest.json"
     bin.write_exec_script libexec/"tunnel-client"
+    generate_completions_from_executable(libexec/"tunnel-client", "completion")
+  end
+
+  service do
+    run [opt_bin/"tunnel-client", "run", "--profile-file", etc/"tunnel-client.yaml"]
+    keep_alive true
+    environment_variables PATH: std_service_path_env
+    log_path var/"log/tunnel-client.log"
+    error_log_path var/"log/tunnel-client.log"
+  end
+
+  def caveats
+    <<~EOS
+      Before starting the service, copy your configured profile to:
+        #{etc}/tunnel-client.yaml
+      Use absolute paths and file: references for secrets in that profile.
+      The service does not load your interactive shell configuration.
+    EOS
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/tunnel-client --version")
+    assert_match "tunnel-client", (bash_completion/"tunnel-client").read
+    assert_match "#compdef tunnel-client", (zsh_completion/"_tunnel-client").read
+    assert_match "complete -c tunnel-client", (fish_completion/"tunnel-client.fish").read
   end
 end
 EOF

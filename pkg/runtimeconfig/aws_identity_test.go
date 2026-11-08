@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +22,10 @@ func (f exchangeTransport) RoundTrip(r *http.Request) (*http.Response, error) { 
 
 func TestAWSWorkloadIdentityExchangesAndCachesTokens(t *testing.T) {
 	// Use only fixture credentials. Exercise both real SDKs against protocol fixtures.
+	configDir := t.TempDir()
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(configDir, "config"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(configDir, "credentials"))
 	t.Setenv("AWS_REGION", "us-east-2")
 	t.Setenv("AWS_ACCESS_KEY_ID", "fixture-id")
 	t.Setenv("AWS_SECRET_ACCESS_KEY", "fixture-secret")
@@ -60,7 +66,10 @@ func TestAWSWorkloadIdentityExchangesAndCachesTokens(t *testing.T) {
 	require.NoError(t, err)
 	provider, err := controlPlaneTokenProvider("", "provider", "sa", endpoint)
 	require.NoError(t, err)
-	for _, want := range []string{"token-1", "token-2", "token-2"} {
+	for i, want := range []string{"token-1", "token-2", "token-2"} {
+		if i == 1 {
+			time.Sleep(100 * time.Millisecond) // Allow the zero-second token expiry to pass.
+		}
 		token, err := provider(context.Background())
 		require.NoError(t, err)
 		require.Equal(t, want, token)

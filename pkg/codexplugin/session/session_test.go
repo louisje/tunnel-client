@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,7 +81,7 @@ func TestWriteRuntimeProfileUsesExistingJSONCompatibleShape(t *testing.T) {
 	require.Contains(t, string(data), `"config_version": 1`)
 	require.Contains(t, string(data), `"url_path": "/chatgpttunnelgateway/dev/us"`)
 	require.Contains(t, string(data), `"server_urls": [`)
-	require.Contains(t, string(data), `"file": "`+LogPath("docs-mcp", root)+`"`)
+	require.Contains(t, string(data), `"file": `+strconv.Quote(LogPath("docs-mcp", root)))
 }
 
 func TestTmuxSessionNameIsScopedByStateRoot(t *testing.T) {
@@ -524,6 +525,9 @@ func TestStartOrReuseRejectsLivePIDWithoutStableIdentity(t *testing.T) {
 }
 
 func TestStartOrReuseMigratesOwnedTmuxSessionToProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("tmux session migration is Unix-specific")
+	}
 	t.Parallel()
 
 	root := state.Root{Path: t.TempDir()}
@@ -573,6 +577,9 @@ func TestStartOrReuseMigratesOwnedTmuxSessionToProcess(t *testing.T) {
 }
 
 func TestStartOrReuseRecoversAmbientLegacyTmuxSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ambient Unix tmux socket is not supported on Windows")
+	}
 	t.Parallel()
 
 	root := state.Root{Path: t.TempDir()}
@@ -612,6 +619,9 @@ func TestStartOrReuseRecoversAmbientLegacyTmuxSocket(t *testing.T) {
 }
 
 func TestStartOrReuseStopsDefaultLegacyTmuxAfterAmbientMiss(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ambient Unix tmux socket is not supported on Windows")
+	}
 	t.Parallel()
 
 	root := state.Root{Path: t.TempDir()}
@@ -956,7 +966,9 @@ func TestStartTmuxPrecreatesPrivateLogFile(t *testing.T) {
 	require.NotContains(t, strings.Join(gotArgs, " "), ">>")
 	info, err := os.Stat(logPath)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }
 
 func TestStartTmuxRejectsSymlinkLogFile(t *testing.T) {

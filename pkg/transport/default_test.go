@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,9 @@ func TestApplyClientCertificateConfiguresExplicitClientCertificateCallback(t *te
 }
 
 func TestApplyUnixSocketPathDialsUnixListener(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test requires a Unix environment")
+	}
 	t.Parallel()
 
 	socketFile, err := os.CreateTemp("/tmp", "transport-*.sock")

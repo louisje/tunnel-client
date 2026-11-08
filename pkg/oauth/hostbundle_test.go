@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -320,6 +321,9 @@ func TestBuildURLBundleUsesTrustedMCPOriginForPrivateRegistration(t *testing.T) 
 
 func shortUnixSocketListener(t *testing.T) (net.Listener, string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test requires a Unix environment")
+	}
 
 	socketFile, err := os.CreateTemp("/tmp", "tunnel-oauth-*.sock")
 	if err != nil {

@@ -110,6 +110,7 @@ type fileMCPConfig struct {
 	DiscoveryExtraHeaders            map[string]string  `yaml:"discovery_extra_headers"`
 	OAuthTrustedOrigins              []string           `yaml:"oauth_trusted_origins"`
 	StartupWaitTimeout               *string            `yaml:"startup_wait_timeout"`
+	StdioFailurePolicy               *string            `yaml:"stdio_failure_policy"`
 	StdioSendInitializedNotification *bool              `yaml:"stdio_send_initialized_notification"`
 	ForwardTraceContext              *bool              `yaml:"forward_trace_context"`
 	Trace                            *bool              `yaml:"trace"`
@@ -135,6 +136,7 @@ type fileMCPCommand struct {
 
 type fileHarpoonConfig struct {
 	Targets              []fileHarpoonTarget `yaml:"targets"`
+	OAuthForwardOrigins  []string            `yaml:"oauth_forward_origins"`
 	AllowPlaintextHTTP   *bool               `yaml:"allow_plaintext_http"`
 	MaxResponseBytes     *int                `yaml:"max_response_bytes"`
 	MaxRedirects         *int                `yaml:"max_redirects"`
@@ -214,6 +216,9 @@ func loadFileConfigValues(fs *pflag.FlagSet, lookupEnv func(string) (string, boo
 	}
 	if configValueOverridden(fs, lookupEnv, "mcp.oauth-trusted-origin", "MCP_OAUTH_TRUSTED_ORIGINS") {
 		selectedCfg.MCP.OAuthTrustedOrigins = nil
+	}
+	if configValueOverridden(fs, lookupEnv, "harpoon.oauth-forward-origin", "HARPOON_OAUTH_FORWARD_ORIGINS") {
+		selectedCfg.Harpoon.OAuthForwardOrigins = nil
 	}
 
 	env, err := selectedCfg.toEnv(lookupEnv)
@@ -451,6 +456,7 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 		env["MCP_OAUTH_TRUSTED_ORIGINS"] = strings.Join(c.MCP.OAuthTrustedOrigins, "\n")
 	}
 	setString(env, "MCP_STARTUP_WAIT_TIMEOUT", c.MCP.StartupWaitTimeout)
+	setString(env, "MCP_STDIO_FAILURE_POLICY", c.MCP.StdioFailurePolicy)
 	setBool(env, "MCP_STDIO_SEND_INITIALIZED_NOTIFICATION", c.MCP.StdioSendInitializedNotification)
 	setBool(env, "MCP_FORWARD_TRACE_CONTEXT", c.MCP.ForwardTraceContext)
 	setBool(env, "MCP_TRACE", c.MCP.Trace)
@@ -460,6 +466,14 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 	setInt(env, "MCP_MAX_CONCURRENT_REQUESTS", c.MCP.MaxConcurrentRequests)
 
 	setBool(env, "HARPOON_ALLOW_PLAINTEXT_HTTP", c.Harpoon.AllowPlaintextHTTP)
+	if c.Harpoon.OAuthForwardOrigins != nil {
+		// Validate before joining: one YAML element must never approve multiple
+		// origins through the environment list's newline separator.
+		if err := validateFileOAuthForwardOrigins(c.Harpoon.OAuthForwardOrigins); err != nil {
+			return nil, err
+		}
+		env["HARPOON_OAUTH_FORWARD_ORIGINS"] = strings.Join(c.Harpoon.OAuthForwardOrigins, "\n")
+	}
 	setInt(env, "HARPOON_MAX_RESPONSE_BYTES", c.Harpoon.MaxResponseBytes)
 	setInt(env, "HARPOON_MAX_REDIRECTS", c.Harpoon.MaxRedirects)
 	setString(env, "HARPOON_HTTP_PROXY", c.Harpoon.HTTPProxy)
@@ -485,6 +499,15 @@ func validateFileOAuthTrustedOrigins(origins []string) error {
 	for _, raw := range origins {
 		if _, err := parseOAuthTrustedOrigin(raw); err != nil {
 			return fmt.Errorf("mcp.oauth_trusted_origins: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateFileOAuthForwardOrigins(origins []string) error {
+	for _, raw := range origins {
+		if _, err := parseOAuthForwardOrigin(raw); err != nil {
+			return fmt.Errorf("harpoon.oauth_forward_origins: %w", err)
 		}
 	}
 	return nil

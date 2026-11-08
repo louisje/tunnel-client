@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -435,7 +436,7 @@ func isRetryableStartupProbeError(err error, retryUnixSocketENOENT bool) bool {
 	if errors.As(err, &statusErr) && statusErr.StatusCode != 0 {
 		return isRetryableStartupProbeHTTPError(err)
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	if errors.Is(err, syscall.ECONNREFUSED) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10061))) {
 		return true
 	}
 	return retryUnixSocketENOENT && errors.Is(err, syscall.ENOENT)
@@ -483,7 +484,11 @@ func recordStartupProbeResult(
 			probeState.Set(res.err)
 		}
 		if logger != nil {
-			logger.ErrorContext(ctx, "failed to connect to mcp", slog.String("error", res.err.Error()))
+			if IsAuthRequiredProbeError(res.err) {
+				logger.InfoContext(ctx, "MCP server requires authentication; startup probe reached server")
+			} else {
+				logger.ErrorContext(ctx, "failed to connect to mcp", slog.String("error", res.err.Error()))
+			}
 		}
 		return
 	}

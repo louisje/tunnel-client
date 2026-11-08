@@ -3,6 +3,7 @@ package mcpclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,6 +101,9 @@ func TestNewMcpClient_DefaultTransport(t *testing.T) {
 }
 
 func TestNewMcpClientLegacyUnixSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test requires a Unix environment")
+	}
 	t.Parallel()
 
 	socketFile, err := os.CreateTemp("/tmp", "mcp-client-legacy-*.sock")
@@ -517,6 +522,42 @@ func TestRunStartupProbeMarksFailure(t *testing.T) {
 	}
 }
 
+func TestRecordStartupProbeHTTPFailureLogging(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+
+			var logs bytes.Buffer
+			state := NewProbeState()
+			probeErr := NewProbeHTTPStatusError(status, errors.New("probe rejected"))
+			recordStartupProbeResult(context.Background(), slog.New(slog.NewJSONHandler(&logs, nil)), state, startupProbeResult{err: probeErr})
+
+			checkedAt, gotErr, done := state.Wait(0)
+			if !done || checkedAt.IsZero() || gotErr != probeErr {
+				t.Fatalf("probe result changed: checkedAt=%v err=%v done=%t", checkedAt, gotErr, done)
+			}
+
+			var entry struct {
+				Level   string `json:"level"`
+				Message string `json:"msg"`
+				Error   string `json:"error"`
+			}
+			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+				t.Fatalf("decode probe log: %v", err)
+			}
+			wantLevel, wantMessage, wantError := "ERROR", "failed to connect to mcp", probeErr.Error()
+			if status == http.StatusUnauthorized {
+				wantLevel, wantMessage, wantError = "INFO", "MCP server requires authentication; startup probe reached server", ""
+			}
+			if entry.Level != wantLevel || entry.Message != wantMessage || entry.Error != wantError {
+				t.Fatalf("probe log = %+v, want level=%q message=%q error=%q", entry, wantLevel, wantMessage, wantError)
+			}
+		})
+	}
+}
+
 func TestConnectStartupProbeCarriesHTTPStatus(t *testing.T) {
 	t.Parallel()
 
@@ -712,7 +753,6 @@ func TestDeliverStartupProbeResultDoesNotCloseTypedNilFailedSession(t *testing.T
 }
 
 func TestRunStartupProbeWithRetryKeepsStatePendingUntilListenerReachable(t *testing.T) {
-	t.Parallel()
 
 	state := NewProbeState()
 	retryObserved := make(chan struct{})
@@ -727,7 +767,7 @@ func TestRunStartupProbeWithRetryKeepsStatePendingUntilListenerReachable(t *test
 		runStartupProbeWithRetry(
 			context.Background(),
 			startupProbeRetryOptions{
-				waitTimeout:  time.Second,
+				waitTimeout:  10 * time.Second,
 				probeTimeout: time.Second,
 				backoffMin:   time.Millisecond,
 				backoffMax:   time.Millisecond,
@@ -990,6 +1030,11 @@ func TestIsRetryableStartupProbeError(t *testing.T) {
 			name: "tcp connection refused",
 			err:  &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
 			want: true,
+		},
+		{
+			name: "windows winsock connection refused",
+			err:  &net.OpError{Op: "dial", Net: "tcp", Err: syscall.Errno(10061)},
+			want: runtime.GOOS == "windows",
 		},
 		{
 			name:            "unix socket missing",

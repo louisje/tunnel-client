@@ -92,7 +92,7 @@ func TestResolveRootPrefersExplicitStateDir(t *testing.T) {
 		}
 	})
 
-	require.Equal(t, "/tmp/tunnel-client-state", root.Path)
+	require.Equal(t, filepath.Clean("/tmp/tunnel-client-state"), root.Path)
 }
 
 func TestResolveRootFallsBackToLegacyCodexHomeWhenPresent(t *testing.T) {

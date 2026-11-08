@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,9 +30,48 @@ import (
 
 	"github.com/openai/tunnel-client/pkg/config"
 	"github.com/openai/tunnel-client/pkg/mcpclient/internal"
+	"github.com/openai/tunnel-client/pkg/runtimeconfig"
 	"github.com/openai/tunnel-client/pkg/tlsconfig"
 	"github.com/openai/tunnel-client/pkg/types"
 )
+
+func TestStdioTransportProviderPassesFailurePolicy(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		config *config.MCPConfig
+		want   runtimeconfig.StdioFailurePolicy
+	}{
+		{name: "default", want: runtimeconfig.StdioFailurePolicyRestart},
+		{name: "external supervisor", config: &config.MCPConfig{StdioFailurePolicy: runtimeconfig.StdioFailurePolicyExit}, want: runtimeconfig.StdioFailurePolicyExit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			factory := newStdioCommandTransportFactory(nil, &stubLifecycle{}, nil)
+			provider := stdioTransportProvider{commandFactory: factory}
+			_, err := provider.Build(TransportBuildParams{
+				Config: tc.config,
+				Binding: config.MCPChannelBinding{
+					Channel:     types.DefaultChannel,
+					CommandArgs: []string{os.Args[0]},
+				},
+			})
+			if err != nil {
+				t.Fatalf("build stdio transport: %v", err)
+			}
+			child := factory.transportForChannel(types.DefaultChannel)
+			child.mu.Lock()
+			got := child.policy
+			stdin, stdout := child.stdin, child.stdout
+			child.mu.Unlock()
+			_ = stdin.Close()
+			_ = stdout.Close()
+			if got != tc.want {
+				t.Fatalf("stdio failure policy = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestChannelTransportFactoryAppliesProxy(t *testing.T) {
 	t.Parallel()
@@ -95,6 +135,9 @@ func TestChannelTransportFactoryAppliesProxy(t *testing.T) {
 }
 
 func TestChannelTransportFactoryDialsUnixSocket(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket test requires a Unix environment")
+	}
 	t.Parallel()
 
 	socketFile, err := os.CreateTemp("/tmp", "mcp-client-*.sock")

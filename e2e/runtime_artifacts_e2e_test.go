@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -984,7 +985,7 @@ func buildRuntimeArtifact(t *testing.T, packagePath, binaryName, flavor string) 
 	)
 	cmd.Dir = runtimeArtifactModuleRoot(t)
 	// Keep the caller's build cache across temporary test checkouts.
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-p=1", "GOMAXPROCS=2")
 	output, err := cmd.CombinedOutput()
 	require.NoErrorf(t, err, "build %s:\n%s", packagePath, output)
 	runtimeArtifactBuilds.paths[key] = binaryPath
@@ -1077,6 +1078,12 @@ func startRuntimeArtifactWithEnv(t *testing.T, binary string, overrides map[stri
 	cmd.Stdout = output
 	cmd.Stderr = output
 	require.NoErrorf(t, cmd.Start(), "start %s", binary)
+	closeJob, jobErr := runtimeArtifactJob(cmd.Process.Pid)
+	if jobErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("manage runtime subprocesses: %v", jobErr)
+	}
 
 	proc := &runtimeArtifactProcess{
 		cmd:    cmd,
@@ -1092,6 +1099,7 @@ func startRuntimeArtifactWithEnv(t *testing.T, binary string, overrides map[stri
 	}()
 	t.Cleanup(func() {
 		_ = proc.stop()
+		closeJob()
 	})
 	return proc
 }
@@ -1110,6 +1118,7 @@ func runtimeArtifactEnvironment(overrides map[string]string) []string {
 		"LOG_FORMAT":                             {},
 		"LOG_LEVEL":                              {},
 		"MCP_FORWARD_TRACE_CONTEXT":              {},
+		"MCP_STDIO_FAILURE_POLICY":               {},
 		"OPEN_WEB_UI":                            {},
 		"OPENAI_API_KEY":                         {},
 		"ALL_PROXY":                              {},
@@ -1199,7 +1208,16 @@ func (p *runtimeArtifactProcess) stop() error {
 				return err
 			}
 		}
-		_ = p.cmd.Process.Kill()
+		if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		<-p.done
+		if runtime.GOOS == "windows" {
+			// Windows cannot deliver os.Interrupt to this detached child.
+			// A successful Kill is the expected test cleanup outcome.
+			return nil
+		}
+		return p.err()
 	}
 	<-p.done
 	return p.err()
@@ -1374,6 +1392,8 @@ func TestRuntimeCodexAppServerHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_RUNTIME_CODEX_APP_SERVER_HELPER") != "1" {
 		return
 	}
+
+	watchRuntimeHelperParent()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

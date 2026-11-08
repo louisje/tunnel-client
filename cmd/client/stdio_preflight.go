@@ -409,7 +409,11 @@ func parseStdioCommandArgv(raw string) ([]string, error) {
 		if inDouble {
 			switch ch {
 			case '\\':
-				escaped = true
+				if runtime.GOOS == "windows" && i+1 < len(input) && input[i+1] != '"' && input[i+1] != '\\' {
+					builder.WriteByte(ch)
+				} else {
+					escaped = true
+				}
 			case '"':
 				inDouble = false
 			default:
@@ -419,7 +423,11 @@ func parseStdioCommandArgv(raw string) ([]string, error) {
 		}
 		switch ch {
 		case '\\':
-			escaped = true
+			if runtime.GOOS == "windows" {
+				builder.WriteByte(ch)
+			} else {
+				escaped = true
+			}
 		case '\'':
 			inSingle = true
 		case '"':

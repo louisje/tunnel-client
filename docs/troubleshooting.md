@@ -16,6 +16,40 @@
 - **"MCP server URL is required"**
   - Set `MCP_SERVER_URL` or `--mcp.server-url=...`.
 
+## DNS failures and Android / Termux
+
+The first DNS failure on a control-plane transport produces a
+`control-plane DNS resolution failed` warning with bounded failure, build,
+and resolver-configuration fields. It does not include the queried name,
+nameserver address, URLs, or credentials. Existing health categories and poll
+errors, such as `network_error`, remain unchanged; inspect the warning for
+additional context.
+
+To collect diagnostics, record the version and reproduce the failure using
+JSON logs, keeping your usual runtime configuration:
+
+```bash
+tunnel-client --version
+tunnel-client run --log.level=info --log.format=json
+```
+
+Use your installed binary's name (for example, `tunnel-client-runtime`) and
+include your usual profile or other run arguments. Share only the
+`control-plane DNS resolution failed` JSON record and version output, along
+with the Android and Termux versions, Wi-Fi or mobile network, and whether a
+VPN or Private DNS is enabled. Other log records can contain deployment
+information. The warning appears once per transport; restart the process to
+collect a fresh warning after changing settings.
+
+On Android, a Linux binary with cgo disabled can attempt `[::1]:53` because
+`/etc/resolv.conf` is missing. Termux's `$PREFIX/etc/resolv.conf` is not read by
+that stock Linux binary, and `GODEBUG=netdns=cgo` cannot add native resolver
+support to it. Other DNS failures can involve a proxy hostname, network
+connectivity, VPN policy, or the system resolver. The warning's `cgo_enabled`
+field describes the build, not the active resolver. These diagnostics help
+identify the environment; they do not change DNS resolution or establish
+Android support.
+
 ## macOS Gatekeeper blocks a downloaded archive
 
 Directly downloaded macOS release ZIPs are not currently notarized and can be
@@ -116,9 +150,12 @@ If you are debugging why `/readyz` is failing or why the client never becomes
 - `/healthz` is liveness only. A `200 live` response means the process is up.
 - `/readyz` includes startup gating:
   - `503 oauth discovery pending` while OAuth discovery is still in flight,
-    including timeout-only startup cycles that are waiting to retry.
+    including startup cycles waiting to retry after timeouts, HTTP 429/5xx, or
+    invalid successful metadata responses. A missing metadata URL (HTTP 404)
+    does not prevent retrying another candidate that timed out. Discovery and
+    polling recover automatically when that endpoint becomes available.
   - `503 oauth discovery failed: ...` when required OAuth discovery reaches a
-    non-timeout failure.
+    permanent failure, such as an untrusted discovery origin.
   - `503 mcp probe failed: ...` when the MCP startup probe fails.
   - `200 ready (mcp initialize requires auth: ...)` when the MCP endpoint is
     reachable but requires auth during `initialize`.

@@ -449,7 +449,11 @@ func TestDoctorDetectsHealthListenerBindConflictByDefault(t *testing.T) {
 	require.Empty(t, stderr)
 	require.Equal(t, 2, exitCode(err))
 	require.Contains(t, stdout, "CHECK health_listener")
-	require.Contains(t, stdout, "address already in use")
+	if runtime.GOOS == "windows" {
+		require.Contains(t, stdout, "Only one usage of each socket address")
+	} else {
+		require.Contains(t, stdout, "address already in use")
+	}
 	require.Contains(t, stdout, "CHECK ui")
 	require.Contains(t, stdout, "blocked by health listener check")
 	require.Contains(t, stdout, "FAILED_CHECKS health_listener")
@@ -558,6 +562,9 @@ func TestDoctorUsesEphemeralUIHintForPortZero(t *testing.T) {
 }
 
 func TestDoctorUsesUnixSocketHealthListener(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix health sockets are unsupported on Windows")
+	}
 	t.Parallel()
 
 	socketPath := shortSocketPath(t, "tunnel-client-doctor-health-*.sock")
@@ -597,7 +604,11 @@ func TestDoctorFailsWhenStdioExecutableMissing(t *testing.T) {
 	require.Empty(t, stderr)
 	require.Equal(t, 2, exitCode(err))
 	require.Contains(t, stdout, "CHECK mcp_command_executable")
-	require.Contains(t, stdout, "stdio MCP executable")
+	if runtime.GOOS == "windows" {
+		require.Contains(t, stdout, "executable file not found")
+	} else {
+		require.Contains(t, stdout, "stdio MCP executable")
+	}
 	require.Contains(t, stdout, "FAILED_CHECKS mcp_command_executable")
 }
 
