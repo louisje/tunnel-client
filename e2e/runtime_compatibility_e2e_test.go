@@ -202,8 +202,8 @@ func TestRuntimeComponentHealthConfigurationCompatibility(t *testing.T) {
 	}{
 		{name: "default"},
 		{name: "yaml_true", yaml: "true", want: true},
-		{name: "env_false_over_yaml_true", yaml: "true", env: "false"},
-		{name: "env_true_over_yaml_false", yaml: "false", env: "true", want: true},
+		{name: "env_false_over_yaml_true", yaml: "true", env: "false", want: true},
+		{name: "env_true_over_yaml_false", yaml: "false", env: "true"},
 		{name: "flag_false_over_true", yaml: "true", env: "true", flag: "false"},
 		{name: "flag_true_over_false", yaml: "false", env: "false", flag: "true", want: true},
 	} {

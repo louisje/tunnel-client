@@ -580,7 +580,7 @@ func TestStartOrReuseMigratesOwnedTmuxSessionToProcess(t *testing.T) {
 		},
 	}
 
-	result, err := StartOrReuseWithExistingRuntime(
+	result, err := startOrReuseWithExistingRuntime(
 		rt,
 		"docs-mcp",
 		"docs-mcp",
@@ -590,6 +590,7 @@ func TestStartOrReuseMigratesOwnedTmuxSessionToProcess(t *testing.T) {
 		nil,
 		ExistingRuntime{Mode: "tmux", SessionName: sessionName},
 		false,
+		func(string) string { return "" },
 	)
 	require.NoError(t, err)
 	require.True(t, started)

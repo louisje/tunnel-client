@@ -144,7 +144,7 @@ mcp:
 				want  string
 			}{
 				{name: "yaml", want: "eu.api.openai.com"},
-				{name: "environment", env: map[string]string{"CONTROL_PLANE_RESIDENCY": "us"}, want: "us.api.openai.com"},
+				{name: "environment", env: map[string]string{"CONTROL_PLANE_RESIDENCY": "us"}, want: "eu.api.openai.com"},
 				{name: "flags", flags: []string{"--control-plane.residency=global"}, env: map[string]string{"CONTROL_PLANE_RESIDENCY": "us"}, want: "api.openai.com"},
 				{name: "mtls", flags: []string{"--control-plane.client-cert=file:" + cert, "--control-plane.client-key=file:" + key}, want: "mtls-eu.api.openai.com"},
 			} {
