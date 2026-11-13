@@ -28,6 +28,10 @@ then read the onboarding guide below.
 
 ## Start Here
 
+- **Selecting a regional control-plane endpoint?** Use
+  `--control-plane.residency`, `CONTROL_PLANE_RESIDENCY`, or YAML
+  `control_plane.residency`. See the [endpoint catalog and mTLS settings](docs/configuration.md#residency-endpoint-selection).
+  Endpoint selection is independent of regional Tunnel service availability.
 - **Need the shortest working path from localhost or a private MCP server to
   ChatGPT or Codex?** Start with [`docs/onboarding.md`](docs/onboarding.md).
 - **Need the customer-shareable network and trust-boundary story?** Read
@@ -266,7 +270,8 @@ after the MCP server is available; the process can remain alive with its
 startup probe failed. After a server restart, check readiness and logs;
 existing MCP sessions may need to be initialized again. For a stdio target,
 the runtime owns the MCP child. Do not assume interrupted tool calls are
-replayed.
+replayed. See [Supervising startup](docs/health.md#supervising-startup) for
+interpreting process liveness, OAuth discovery, readiness, and polling state.
 
 ## For Codex / Copilot
 
@@ -769,6 +774,11 @@ plugin installed by `tunnel-client codex plugin install`.
   automatically uses `https://mtls.api.openai.com` for control-plane calls.
 - On startup, it fetches tunnel metadata for operator visibility:
   - `GET /v1/tunnels/{tunnel_id}`
+- The `tunnel-client process started` log confirms process startup. Check
+  `/readyz` for readiness and `/health/control-plane` for observed polling.
+  Optional all-404 OAuth metadata discovery logs at INFO and reports
+  `not_advertised` in `/health/oauth`, including HTML or JSON 404 bodies.
+  See [startup supervision](docs/health.md#supervising-startup).
 - It forwards received JSON-RPC requests to your configured MCP server over
   Streamable HTTP, stdio, or in-memory transport, and relays explicit
   Streamable HTTP session termination requests when the control plane receives
@@ -776,12 +786,14 @@ plugin installed by `tunnel-client codex plugin install`.
 - It routes commands by channel: `main` targets the configured MCP binding,
   additional configured channels can target their own MCP bindings, and
   `harpoon` is routable only when Harpoon has registered targets.
-- On startup, it fetches OAuth Protected Resource Metadata from the MCP server
+- By default, it fetches OAuth Protected Resource Metadata from the MCP server on startup
   and registers discovered Harpoon targets. Timeouts, HTTP `429`/`5xx`, and
   malformed successful metadata responses retry with bounded exponential
   backoff until discovery succeeds or the process stops. Permanent errors
   remain visible through readiness; discovery validation and trusted-origin
-  restrictions still apply.
+  restrictions still apply. For an MCP server using a static credential,
+  set `MCP_OAUTH_DISCOVERY=disabled` to skip startup and later OAuth discovery.
+  [MCP configuration](docs/configuration.md#mcp-server)
 - Before polling for Harpoon work, the runtime waits for startup discovery and
   target registration to complete. Failed startup catalogs do not consume
   commands, and readiness remains non-ready until registration succeeds.
@@ -817,11 +829,17 @@ plugin installed by `tunnel-client codex plugin install`.
   mismatch diagnostics preserved in logs/state.
 - It exposes an **admin/health server** (`/healthz`, `/readyz`, `/metrics`) and
   a lightweight **admin UI** (`/ui`) for operational status.
-- Local `GET /health?details=true` and `GET /health/mcp` expose bounded
-  observations of legacy initialize and modern `server/discover` MCP discovery,
-  polling, response delivery, queues, and active work. Plain `/health` stays
-  compact unless `--health.show-details=true` is set (default false). See the
-  [health reference](docs/health.md) for examples,
+- The admin UI supports a generic reverse-proxy path prefix. Prefix-stripping
+  proxies need no base-path setting; prefix-preserving proxies use
+  `--admin-ui.base-path`. An explicit `--admin-ui.public-origin` can allow the
+  browser's origin for guarded actions through a reverse proxy. See
+  [reverse proxy paths](docs/configuration.md#reverse-proxy-paths) for mount
+  URLs, security boundaries, and configuration examples.
+- Local `GET /health?details=true`, `GET /health/mcp`, and `GET /health/oauth`
+  expose bounded observations of legacy initialize and modern `server/discover`
+  MCP discovery, OAuth startup probes, polling, response delivery, queues, and
+  active work. Plain `/health` stays compact unless `--health.show-details=true`
+  is set (default false). See the [health reference](docs/health.md) for examples,
   Unix sockets, and the difference between readiness and observed discovery.
 - The admin UI Overview reports the process-scoped `client_instance_id`,
   channel availability, and reasons when channels are disabled.

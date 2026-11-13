@@ -44,6 +44,7 @@ type fileConfig struct {
 }
 
 type fileControlPlaneConfig struct {
+	Residency             *string           `yaml:"residency"`
 	BaseURL               *string           `yaml:"base_url"`
 	URLPath               *string           `yaml:"url_path"`
 	TunnelID              *string           `yaml:"tunnel_id"`
@@ -84,9 +85,11 @@ type fileHealthConfig struct {
 // validation for every flavor. Runtime flavors accept only disabled/default
 // values; pkg/config consumes the values only for the full client.
 type fileAdminUICompat struct {
-	AllowRemote     *bool `yaml:"allow_remote"`
-	OpenBrowser     *bool `yaml:"open_browser"`
-	LogBufferEvents *int  `yaml:"log_buffer_events"`
+	AllowRemote     *bool   `yaml:"allow_remote"`
+	OpenBrowser     *bool   `yaml:"open_browser"`
+	LogBufferEvents *int    `yaml:"log_buffer_events"`
+	BasePath        *string `yaml:"base_path"`
+	PublicOrigin    *string `yaml:"public_origin"`
 }
 
 type fileProcessConfig struct {
@@ -108,6 +111,7 @@ type fileMCPConfig struct {
 	ClientKey                        *string            `yaml:"client_key"`
 	ExtraHeaders                     map[string]string  `yaml:"extra_headers"`
 	DiscoveryExtraHeaders            map[string]string  `yaml:"discovery_extra_headers"`
+	OAuthDiscovery                   *string            `yaml:"oauth_discovery"`
 	OAuthTrustedOrigins              []string           `yaml:"oauth_trusted_origins"`
 	StartupWaitTimeout               *string            `yaml:"startup_wait_timeout"`
 	StdioFailurePolicy               *string            `yaml:"stdio_failure_policy"`
@@ -294,6 +298,12 @@ func (c fileConfig) validateRuntimeFullOnlyCompatibility() error {
 	if c.AdminUI.LogBufferEvents != nil && *c.AdminUI.LogBufferEvents != DefaultAdminUILogBufferEvents {
 		return fmt.Errorf("runtime configuration rejects non-default admin_ui.log_buffer_events")
 	}
+	if c.AdminUI.BasePath != nil && *c.AdminUI.BasePath != "" {
+		return fmt.Errorf("runtime configuration rejects non-default admin_ui.base_path")
+	}
+	if c.AdminUI.PublicOrigin != nil && *c.AdminUI.PublicOrigin != "" {
+		return fmt.Errorf("runtime configuration rejects non-default admin_ui.public_origin")
+	}
 	if c.Harpoon.PayloadCapture != nil && *c.Harpoon.PayloadCapture {
 		return fmt.Errorf("runtime configuration rejects non-default harpoon.capture_payloads")
 	}
@@ -359,6 +369,7 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 		env["FORWARD_REQUEST_ID"] = raw
 	}
 
+	setString(env, "CONTROL_PLANE_RESIDENCY", c.ControlPlane.Residency)
 	if err := setResolvedString(env, "CONTROL_PLANE_BASE_URL", "control_plane.base_url", c.ControlPlane.BaseURL, lookupEnv); err != nil {
 		return nil, err
 	}
@@ -411,6 +422,8 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 	setBool(env, "ALLOW_REMOTE_UI", c.AdminUI.AllowRemote)
 	setBool(env, "OPEN_WEB_UI", c.AdminUI.OpenBrowser)
 	setInt(env, "ADMIN_UI_LOG_BUFFER_EVENTS", c.AdminUI.LogBufferEvents)
+	setString(env, "ADMIN_UI_BASE_PATH", c.AdminUI.BasePath)
+	setString(env, "ADMIN_UI_PUBLIC_ORIGIN", c.AdminUI.PublicOrigin)
 	setString(env, "PID_FILE", c.Process.PIDFile)
 	setBool(env, "CLOUDFLARED_MANAGED", c.Cloudflared.Managed)
 	setString(env, "CLOUDFLARED_PATH", c.Cloudflared.Path)
@@ -447,6 +460,7 @@ func (c fileConfig) toEnv(lookupEnv func(string) (string, bool)) (map[string]str
 		}
 		env["MCP_DISCOVERY_EXTRA_HEADERS"] = discoveryExtraHeaders
 	}
+	setString(env, "MCP_OAUTH_DISCOVERY", c.MCP.OAuthDiscovery)
 	if c.MCP.OAuthTrustedOrigins != nil {
 		// Validate each YAML element before encoding the environment list so a
 		// newline inside one element cannot grant trust to additional origins.

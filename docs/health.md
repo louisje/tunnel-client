@@ -1,7 +1,7 @@
 # Local health and component details
 
-Use `/healthz` for process liveness and `/readyz` for the existing startup
-readiness decision. Use `/health?details=true` or `/health/mcp` to understand
+Use `/healthz` for tunnel-client process liveness and `/readyz` for the existing
+startup readiness decision. Use `/health?details=true` or `/health/mcp` to understand
 what the runtime has observed. Reading health never initializes MCP, lists
 tools, starts another child, or probes a dependency. Observations are historical
 evidence at their timestamps, not a continuous reachability guarantee.
@@ -43,6 +43,11 @@ contracts remain valid and do not require an upgrade of the remote service.
 Consumers should check `schema_version` and ignore unknown JSON fields and
 component names within a supported schema version. This permits additive
 diagnostics without requiring every reader to upgrade together.
+
+**Automation:** Use the `/health` family when you need the documented schema and
+compatibility rules above. The full client's `/api/status` and `/api/oauth`
+endpoints are admin UI and support snapshots; they do not follow this health
+schema contract.
 
 ### Stable JSON ordering
 
@@ -204,7 +209,7 @@ unknown metadata, or raw response fields.
 | `response-delivery` | Upload attempts, retries, active uploads, actual 200 acceptance and logical completion. The compatible benign 404 outcome is distinct from acceptance. | All three. |
 | `queue` | Local polled-command channel depth, capacity, utilization, enqueue/dequeue counts and backpressure. This says nothing about the remote queue. | All three. |
 | `dispatcher` | Actual active operations, pool limit, oldest active age, completions, failures and timeouts. Idle worker goroutines are not active operations. Age alone does not prove a stall. | All three. |
-| `oauth` | Startup discovery pending, succeeded, optional failure, failure, or disabled. This does not validate a user's credentials or token. | All three. |
+| `oauth` | Overall startup discovery outcome; see [Supervising startup](#supervising-startup). This does not validate a user's credentials or token. | All three. |
 | `harpoon` | Configured target count and startup catalog pending/settled/failed. A settled catalog does not prove target reachability. | When its runtime module is present. |
 | `cloudflared` | Existing companion enabled/readiness state and transition time. | Full and cloudflared runtime; absent in the narrow runtime without cloudflared. |
 | `proxy` | Bounded route observations from the existing proxy checker. No proxy URL, credentials, or history. | Full client when its checker is registered. |
@@ -226,10 +231,231 @@ by health reads. A list-changed notification invalidates catalog completeness.
 Protocol evidence does not prove that its response upload succeeded; inspect
 `response-delivery` separately.
 
+## Supervising startup
+
+The `tunnel-client process started` log confirms that the CLI lifecycle started.
+It can appear while discovery is pending or after a startup catalog failure;
+it does not establish readiness or control-plane polling. Check `/readyz` and
+`/health/control-plane` separately.
+
+Use each process's own exit and liveness policy for restarts. The MCP server's
+health contract governs the MCP process; tunnel-client's `/healthz` governs
+tunnel-client liveness. A tunnel-client readiness failure or an individual MCP
+HTTP error does not establish that the MCP process needs to restart.
+
+Read `/health?details=true` for the component evidence behind startup. The
+snapshot's `ready` field and `/readyz` report tunnel-client readiness. They are
+not MCP process liveness or a universal flag for polling eligibility.
+
+### Choose the signal for the decision
+
+| Signal | Meaning and recommended use |
+| --- | --- |
+| MCP process exit or its own liveness check | Apply the MCP server's documented process restart policy. Tunnel-client health does not replace this check. |
+| `/healthz` | Tunnel-client is alive when it returns 200. Use it for tunnel-client liveness, not MCP or OAuth health. |
+| `/readyz` or the aggregate `ready` field | The current tunnel-client readiness decision, including applicable runtime dependencies, OAuth discovery, and the MCP startup probe. Inspect components to diagnose a non-ready result. Determine polling eligibility separately below. |
+| `/health/oauth` | The overall startup OAuth discovery outcome. This does not validate a user's credentials or token. |
+| `/health/mcp` | Main-channel transport and observed MCP protocol evidence, including the separate startup initialization probe where applicable. For stdio, readiness can precede any observed protocol exchange. |
+| `/health/harpoon` (when registered) | Startup target catalog registration. A settled catalog does not prove that a target is reachable. |
+| `/health/control-plane` | Observed poll attempts, successes, waits, and backoff. Use it to distinguish an active or paused poller from repeated poll failures. |
+| An individual MCP HTTP response | A result for one request. Retain the evidence and identify the request's role before interpreting its effect on startup. A 415 or 405 alone does not determine the final OAuth outcome or MCP process health. |
+
+While startup is pending, keep a healthy MCP process available. Diagnose final
+integration failures and alert the operator; restart a process when its own
+health policy or a configuration change requires it.
+
+### Read the OAuth startup outcome
+
+Use the local component endpoint:
+
+```sh
+curl -fsS 'http://127.0.0.1:8080/health/oauth'
+```
+
+An HTTP 200 means the snapshot was read successfully, including when discovery
+failed. Read the JSON `state` and `status` fields for the OAuth outcome.
+
+The current schema version 1 OAuth component uses these values:
+
+| `state` | `status` | `reason_code` | `details.discovery_complete` | Meaning |
+| --- | --- | --- | --- | --- |
+| `pending` | `unknown` | omitted | `false` | No final startup discovery outcome yet. |
+| `complete` | `ok` | omitted | `true` | Startup OAuth discovery completed successfully. |
+| `not_advertised` | `ok` | `metadata_not_advertised` | `true` | Optional absence of protected-resource metadata; this allowed outcome supports plain MCP servers. |
+| `failed` | `degraded` | `discovery_failed` | `true` | Required startup OAuth discovery failed. |
+| `disabled` | `disabled` | `disabled_by_configuration` | `false` | The operator set `MCP_OAUTH_DISCOVERY=disabled`. The catalog gate can complete without fetching metadata. |
+| `disabled` | `disabled` | omitted | `false` | The main channel has no HTTP MCP target for discovery. |
+
+For enabled discovery, `discovery_complete` means it reached a final outcome,
+including a failure; it is not a success flag. Component `status` describes that
+component's evidence independently of readiness. The `complete`,
+`not_advertised`, and `failed` states include `observed_at`, the time discovery
+settled. The `pending` and `disabled` states omit it. Treat unrecognized state
+or reason values as unknown.
+
+For example, a pending response has this shape (timestamps are illustrative):
+
+```json
+{
+  "schema_version": 1,
+  "snapshot_at": "2026-01-02T03:04:05Z",
+  "component": "oauth",
+  "status": "unknown",
+  "state": "pending",
+  "limited": false,
+  "details": {"discovery_complete": false}
+}
+```
+
+A final failure still has `discovery_complete: true`:
+
+```json
+{
+  "schema_version": 1,
+  "snapshot_at": "2026-01-02T03:04:10Z",
+  "component": "oauth",
+  "status": "degraded",
+  "state": "failed",
+  "reason_code": "discovery_failed",
+  "observed_at": "2026-01-02T03:04:09Z",
+  "limited": false,
+  "details": {"discovery_complete": true}
+}
+```
+
+These fields describe the overall startup discovery outcome. Use the optional
+probe observations below to inspect the HTTP attempts that led to it.
+
+When no metadata URL was advertised in a challenge and all metadata candidates
+return HTTP 404, the summary is INFO `OAuth metadata not advertised; continuing
+without OAuth`, including when those 404 bodies contain HTML or JSON errors.
+The component reports `not_advertised`, and optional absence does not block the
+startup catalog. Required discovery failures still log WARN `OAuth discovery
+failed` and retain their existing readiness and polling gates.
+
+### Inspect OAuth startup probes
+
+For HTTP startup OAuth discovery, `details.active_probes` contains up to 16
+outstanding observations and `details.recent_probes` contains the last 16
+completed observations. They are available while the overall OAuth state is
+still `pending`. Active observations are ordered by registration; completed
+observations are ordered by completion, oldest retained first. Empty arrays are
+omitted.
+
+One observation represents one invocation of the configured HTTP transport.
+Each redirect or explicit retry that invokes the transport produces a separate
+observation. Request construction failures and rejected redirect destinations do
+not create synthetic observations. An attempt can fail before reaching the
+server, and a transport can perform internal retries that are not separately
+observable here. A missing response status means that no valid response status
+was observed; it does not prove that the server received or rejected the request.
+
+For example, this `details` value shows a rejected challenge followed by a
+metadata response whose body or disposition is still being processed. IDs and
+timestamps are illustrative:
+
+```json
+{
+  "discovery_complete": false,
+  "active_probes": [
+    {
+      "probe_id": "probe-example-2",
+      "origin": "startup",
+      "probe_type": "protected_resource_metadata",
+      "method": "GET",
+      "started_at": "2026-01-02T03:04:06Z",
+      "response_at": "2026-01-02T03:04:07Z",
+      "status_code": 200,
+      "disposition": "pending",
+      "response_request_id": "probe-prmd-200"
+    }
+  ],
+  "recent_probes": [
+    {
+      "probe_id": "probe-example-1",
+      "origin": "startup",
+      "probe_type": "www_authenticate",
+      "method": "POST",
+      "started_at": "2026-01-02T03:04:05Z",
+      "response_at": "2026-01-02T03:04:05Z",
+      "status_code": 415,
+      "completed_at": "2026-01-02T03:04:06Z",
+      "disposition": "fallback",
+      "response_request_id": "probe-post-415"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `probe_id` | Opaque identifier for this observation within one tunnel-client process. It is not sent to the server. |
+| `origin` | `startup`; queued OAuth commands and the separate MCP initialization probe do not enter this history. |
+| `probe_type` | `www_authenticate`, `protected_resource_metadata`, or `authorization_server_metadata`. |
+| `method` | The transport request method, projected to `GET`, `POST`, or `OTHER`. |
+| `started_at` | Time the transport attempt began. |
+| `response_at` | Time response headers became available; omitted when no response was observed. |
+| `status_code` | Observed three-digit HTTP status; omitted when absent or invalid. |
+| `completed_at` | Time the discovery decision was recorded; omitted while pending. |
+| `disposition` | The decision described below. It is based on control flow, not an HTTP status lookup. |
+| `response_request_id` | Optional validated `X-Request-Id` from this exact response. |
+
+| Disposition | Meaning |
+| --- | --- |
+| `pending` | The request or its decision is still in progress. A response status may already be available. |
+| `accepted` | This discovery step accepted or retained the response. Later discovery, bundle, or catalog work can still fail. |
+| `fallback` | The client chose another method or candidate, a retained candidate, or continuation without optional enrichment. This describes the immediate action, not whether the response is used later. |
+| `retry` | The client scheduled another request, pass, or startup cycle. Shutdown can prevent that later attempt from running. |
+| `redirect` | The existing redirect policy allowed continuation. This does not prove that the next destination was reached. |
+| `not_advertised` | The complete discovery result settled as optional metadata absence. A single 404 does not establish this outcome. |
+| `terminal_failure` | The complete discovery result settled as a required failure at this observation. The decision can depend on earlier attempts; failures outside HTTP can settle discovery without this disposition. |
+| `cancelled` | The startup operation was cancelled by its owner before another decision was recorded. Request deadlines follow the normal fallback, retry, or failure decision instead. |
+
+The component's final OAuth state remains authoritative. A completed observation
+is not rewritten when later work fails. Probe observations are diagnostic
+snapshots, not a synchronization barrier for a supervisor that acts immediately
+on server logs. Continue using the supervision policy above.
+
+`probe_id` cannot be used directly to search server logs. `response_request_id`
+helps only when the server records the same value; its presence and uniqueness
+are not guaranteed. The client retains exactly one `X-Request-Id` value only
+when it contains 1–128 ASCII letters, digits, `.`, `_`, `:`, or `-`, and the
+response's `Connection` header does not name it. Invalid, ambiguous, or oversized values
+are omitted rather than shortened. Treat retained IDs as untrusted diagnostic
+data provided by the server.
+
+ID inspection omits the value when the parsed response exceeds 128 header
+entries, 32 `Connection` values, or 1,024 total `Connection` bytes. These limits
+bound diagnostic work even for a custom HTTP transport.
+
+The component sets `limited` when inspection or retention limits reduce the
+available evidence. That indication remains set for the startup lifetime.
+Older runtimes may omit both arrays. Treat missing arrays as unavailable evidence.
+
+### Determine polling separately from readiness
+
+In the standard runtime, polling has startup gates in addition to its normal
+retry and queue behavior:
+
+| Condition | Polling effect |
+| --- | --- |
+| A positive `mcp.startup_wait_timeout` is active for an HTTP `main` binding | The first poll and OAuth discovery wait for the MCP initialization probe to settle or the configured wait to expire. |
+| The listener wait expires | The listener gate releases. `/readyz` remains non-ready for the startup wait failure, and the catalog gate below still applies. |
+| Polling is unscoped or its scope includes `harpoon` | Startup OAuth discovery and target registration must complete before commands are consumed. A pending or failed startup catalog keeps this gate closed. |
+| Polling explicitly excludes `harpoon` | It does not wait for the Harpoon startup catalog. Other applicable conditions remain. |
+| Startup gates are open | The poller may proceed. Queue pressure or retry backoff can still pause polling; inspect `/health/control-plane` for observed behavior. |
+
+An OAuth `complete` state does not establish that Harpoon registration has
+settled. A `/readyz` 200 does not prove that a poll is currently successful,
+and a 503 does not universally mean polling is blocked.
+Use the configured polling scope and the applicable gates to interpret
+eligibility. See [poll channels](configuration.md#control-plane) and
+[startup listener wait](configuration.md#mcp-server) for configuration details.
+
 ## Bounds and privacy
 
 Health state does not retain tool schemas, descriptions, arguments, outputs,
-raw errors, credentials, OAuth bodies/headers, pagination cursors, or target
+raw errors, credentials, raw OAuth bodies/headers, pagination cursors, or target
 inventories. The following diagnostic limits do not change forwarded traffic:
 
 | Item | Limit |
@@ -243,6 +469,7 @@ inventories. The following diagnostic limits do not change forwarded traffic:
 | Protocol and server identity fields | 256 UTF-8 bytes each; oversized values are omitted, not shortened into a different identity. |
 | Runtime version / flavor | 256 / 32 UTF-8 bytes. |
 | Component state / reason code | 32 / 64 bytes of fixed identifiers. |
+| OAuth startup probe observations | Up to 16 active and 16 completed observations; response request IDs are at most 128 ASCII bytes. |
 | Proxy route summaries | 16. |
 | Dispatcher start timestamps | 1,024 active timestamp slots; operation counts remain exact when age tracking is limited. |
 

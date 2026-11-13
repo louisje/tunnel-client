@@ -66,7 +66,7 @@ func (l *tunnelEventLogger) LogEvent(event fxevent.Event) {
 			}
 		}
 		oauthDiscoveryURLs := make([]string, 0)
-		if l.mcpConfig != nil {
+		if l.mcpConfig != nil && !l.mcpConfig.DisableOAuthDiscovery {
 			priority := 1
 			for _, metadataURL := range oauth.BuildResourceMetadataURLs(l.mcpConfig.ServerURL) {
 				if metadataURL == nil {
@@ -76,7 +76,7 @@ func (l *tunnelEventLogger) LogEvent(event fxevent.Event) {
 				priority++
 			}
 		}
-		l.logger.Info("🟢 tunnel-client started",
+		l.logger.Info("tunnel-client process started; readiness and control-plane polling are reported separately",
 			slog.String("tunnel_id", l.cfg.TunnelID.String()),
 			slog.String("tunnel_url", tunnelURL),
 			slog.String("name", metaName),

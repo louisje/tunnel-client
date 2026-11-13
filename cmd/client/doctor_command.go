@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -157,6 +158,12 @@ func runDoctor(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)) doctorR
 		Status:  doctorStatusPass,
 		Summary: cfg.ControlPlane.TunnelID.String(),
 	})
+	if cfg.ControlPlane.Residency != "" {
+		checks = append(checks, doctorCheck{
+			ID: "control_plane_endpoint", Status: doctorStatusPass,
+			Summary: fmt.Sprintf("residency=%s endpoint=%s mTLS=%t; regional service availability is not verified", cfg.ControlPlane.Residency, cfg.ControlPlane.BaseURL.Host, cfg.ControlPlane.ClientCertificate != nil),
+		})
+	}
 	checks = append(checks, doctorCheck{
 		ID:      "control_plane_api_key",
 		Status:  doctorStatusPass,
@@ -179,7 +186,15 @@ func runDoctor(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)) doctorR
 				client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
 				defer client.CloseIdleConnections()
 				checks = append(checks, doctorReachabilityCheck(client, mainBinding.ServerURL))
-				checks = append(checks, doctorOAuthMetadataCheck(client, mainBinding.ServerURL, cfg.MCP.OAuthTrustedOrigins...))
+				if cfg.MCP.DisableOAuthDiscovery {
+					checks = append(checks, doctorCheck{
+						ID:      "oauth_metadata",
+						Status:  doctorStatusSkip,
+						Summary: "OAuth discovery disabled by configuration",
+					})
+				} else {
+					checks = append(checks, doctorOAuthMetadataCheck(client, mainBinding.ServerURL, cfg.MCP.OAuthTrustedOrigins...))
+				}
 			}
 		} else {
 			checks = append(checks, doctorCheck{
@@ -450,7 +465,14 @@ func doctorOAuthMetadataCheck(client *http.Client, serverURL *url.URL, trustedOr
 				Summary: "OAuth metadata not advertised; all candidates returned HTTP 404",
 			}
 		}
-		return doctorOAuthMetadataFailure(err.Error())
+		check := doctorOAuthMetadataFailure(err.Error())
+		if (probe == nil || probe.URL == "") && slices.ContainsFunc(attempts, func(attempt oauth.DiscoveryAttempt) bool {
+			return attempt.HTMLInsteadOfMetadata
+		}) {
+			check.Why = "A well-known OAuth metadata URL returned an HTML page. A frontend or proxy may be serving its fallback page at that URL."
+			check.Next = append(check.Next, "If the MCP server intentionally uses static credentials without OAuth, set MCP_OAUTH_DISCOVERY=disabled. For OAuth servers, fix the route to serve the protected-resource metadata as JSON.")
+		}
+		return check
 	}
 	if resp == nil || sourceURL == nil {
 		return doctorOAuthMetadataFailure("OAuth metadata discovery returned no response")

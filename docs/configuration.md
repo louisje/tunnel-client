@@ -201,6 +201,8 @@ health:
   url_file: /run/tunnel-client/health-url
 admin_ui:
   open_browser: false
+  base_path: ""
+  public_origin: ""
   log_buffer_events: 2000
 process:
   pid_file: /run/tunnel-client/tunnel-client.pid
@@ -372,6 +374,82 @@ tunnel-client profiles add corp-proxy --sample sample_mcp_enterprise_proxy --tun
 
 ## Control plane
 
+### Residency endpoint selection
+
+Select a public control-plane endpoint with `--control-plane.residency`,
+`CONTROL_PLANE_RESIDENCY`, or YAML `control_plane.residency`. Precedence remains
+flags > environment > YAML/profile > defaults. Values are case-insensitive;
+an explicitly empty or unknown value is rejected. Omit the setting to preserve
+existing default and custom base-URL behavior. `global` means no geographic
+constraint and is separate from `us`.
+
+| Value | HTTPS base URL | mTLS base URL |
+| --- | --- | --- |
+| `global` | `https://api.openai.com` | `https://mtls.api.openai.com` |
+| `us` | `https://us.api.openai.com` | `https://mtls-us.api.openai.com` |
+| `eu` | `https://eu.api.openai.com` | `https://mtls-eu.api.openai.com` |
+| `au` | `https://au.api.openai.com` | Unconfigured |
+| `ca` | `https://ca.api.openai.com` | Unconfigured |
+| `gb` | `https://gb.api.openai.com` | Unconfigured |
+| `in` | `https://in.api.openai.com` | Unconfigured |
+| `jp` | `https://jp.api.openai.com` | Unconfigured |
+| `kr` | `https://kr.api.openai.com` | Unconfigured |
+| `sg` | `https://sg.api.openai.com` | Unconfigured |
+| `ae` | `https://ae.api.openai.com` | Unconfigured |
+
+The catalog contains no regional enable flag. Customers can install this client
+before a backend adds support. Selecting an endpoint does not enable regional
+Tunnel service, move an existing tunnel, change workspace access, or guarantee
+where requests, responses, metadata, logs, or inference are processed or stored.
+EU Tunnel residency is not currently available as a supported customer deployment.
+Service failures stay on the selected endpoint and retain the usual error and
+retry behavior; there is no fallback to global or another residency.
+
+Tunnel metadata responses can report the service-assigned `residency` and a
+`control_plane_url` for ordinary TLS. These fields are informational in current
+tunnel-client versions: endpoint selection continues to come from client configuration.
+The URL can be absent in older responses or when no public endpoint is configured for
+that environment and assignment.
+
+Configure both existing `control_plane.client_cert` and `client_key` settings to
+select the same residency's mTLS endpoint. Requesting mTLS where the catalog has
+no mTLS endpoint fails configuration validation. MCP certificates remain separate.
+Certificate files load at startup; restart after rotation. The runtime API key
+remains required. AWS workload identity currently supports only the global
+ordinary-TLS endpoint.
+
+When residency is explicit, a supplied `base_url` must match its ordinary TLS
+endpoint or selected mTLS endpoint; a matching ordinary endpoint upgrades to
+mTLS when certificates are configured. Conflicting origins, credentials, paths,
+query strings, fragments, and nonstandard ports are rejected. Control-plane
+redirects are not followed. Outbound proxy selection and CA bundles retain their
+existing settings; HTTP CONNECT proxies retain TLS to the selected endpoint.
+
+For example, this configuration selects the EU mTLS endpoint once service support
+is available; it does not make EU Tunnel service available today:
+
+```yaml
+control_plane:
+  residency: eu
+  tunnel_id: tunnel_0123456789abcdef0123456789abcdef
+  api_key: env:CONTROL_PLANE_API_KEY
+  client_cert: file:/run/secrets/client.crt
+  client_key: file:/run/secrets/client.key
+```
+
+The same selector is accepted by `doctor` and `admin tunnels` commands. Native
+`runtimes` commands use `--control-plane-residency`; generated runtime profiles
+preserve the selection. Tunnel MCP lifecycle tools accept
+`control_plane_residency`. The Go SDK accepts `Config.ControlPlaneResidency`
+and an optional `Config.ControlPlaneClientCertificate` loaded with Go's
+`tls.LoadX509KeyPair`.
+
+For existing native admin profiles, the selector replaces a stored legacy
+`https://api.openai.com` default. Explicit base URL overrides and custom profile
+endpoints must still match the selected residency.
+
+### Other control-plane settings
+
 - **Base URL**
   - Flag: `--control-plane.base-url`
   - Env: `CONTROL_PLANE_BASE_URL`
@@ -464,6 +542,8 @@ tunnel-client profiles add corp-proxy --sample sample_mcp_enterprise_proxy --tun
     parameters are serialized.
   - A Harpoon-only client may set only `harpoon` and omit the main MCP binding,
     but it must configure at least one routable Harpoon target.
+    When OAuth discovery is disabled, any explicit poll scope containing
+    `harpoon` requires at least one configured Harpoon target, even with `main`.
   - Unscoped polling and scopes that include `harpoon` wait for startup OAuth
     discovery and target registration to complete. A failed startup catalog
     prevents polling, and `/readyz` stays non-ready while registration is
@@ -471,6 +551,8 @@ tunnel-client profiles add corp-proxy --sample sample_mcp_enterprise_proxy --tun
     this catalog. This gate requires the standard runtime's acknowledged
     registration bus; custom embedded graphs using a legacy publication-only
     bus retain their existing behavior.
+  - See [Supervising startup](health.md#supervising-startup) for the combined
+    listener wait, catalog, readiness, and polling rules.
 - **Polled-command buffer capacity**
   - Flag: `--control-plane.max-inflight`
   - Env: `CONTROL_PLANE_MAX_INFLIGHT_REQUESTS`
@@ -704,8 +786,10 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
     Readiness stays pending until the probe settles; other default probe
     failure handling is unchanged.
   - If the configured wait expires, `/readyz` remains non-ready. Polling still
-    requires successful startup catalog completion when Harpoon is included.
-    Initialization retries never replay tunneled MCP commands.
+    requires successful startup catalog completion when it is unscoped or its
+    scope includes `harpoon`. Initialization retries never replay tunneled MCP
+    commands. See [Supervising startup](health.md#supervising-startup) for the
+    relationship between this wait, readiness, and polling.
 - **Max concurrent requests**
   - Flag: `--mcp.max-concurrent-requests`
   - Env: `MCP_MAX_CONCURRENT_REQUESTS`
@@ -747,6 +831,24 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
     unrelated authorization-server hosts.
   - Conflict behavior: connector-forwarded request headers are applied last and
     override these static values case-insensitively.
+- **OAuth discovery mode**
+  - Set `--mcp.oauth-discovery=disabled`, `MCP_OAUTH_DISCOVERY=disabled`, or
+    `mcp.oauth_discovery: disabled` for a static-credential MCP server.
+    The default, `auto`, probes the main HTTP MCP server and retries malformed
+    successful metadata responses.
+  - In `disabled` mode, startup and `tunnel-client doctor` skip OAuth challenge
+    and metadata probes. The startup catalog completes with only explicitly
+    configured targets. For a later queued OAuth discovery request, the client
+    returns a 404 with code `oauth_discovery_disabled` without contacting the
+    MCP server. Flows that rely on discovered registration, token, or
+    revocation endpoints are unavailable.
+  - The MCP initialization probe and normal MCP requests still run.
+    `MCP_EXTRA_HEADERS` can supply the upstream credential, and the MCP
+    server's authentication errors propagate to callers. Check `/health/oauth`
+    for `state: "disabled"` and `reason_code: "disabled_by_configuration"`.
+  - When upgrading multiple replicas, older clients ignore the environment
+    variable and continue discovery. Check each replica's `/health/oauth`
+    after upgrading. Use the CLI flag or YAML key once all replicas support it.
 - **Static discovery/probe headers (optional)**
   - Flag (repeatable): `--mcp.discovery-extra-headers "Key: Value"`
   - Env: `MCP_DISCOVERY_EXTRA_HEADERS="Key: Value, Key2: Value2"`
@@ -761,6 +863,14 @@ routing, streaming, OAuth discovery, and common setup pitfalls, see
   - Conflict behavior: these discovery/probe headers override
     `MCP_EXTRA_HEADERS` for discovery/probe requests. If connector-forwarded
     headers are present on a request, they are still applied last.
+  - For log grouping, an operator-defined header such as
+    `--mcp.discovery-extra-headers "X-Operator-Discovery: 1"` can label this
+    traffic in MCP server logs. The same label can appear on startup OAuth,
+    queued OAuth discovery, and the separate MCP startup initialization probe.
+    It is static: it does not identify an individual probe or indicate whether
+    a response allows discovery to continue. See
+    [Supervising startup](health.md#supervising-startup) for interpreting the
+    corresponding health states.
 
 **OAuth-protected MCP notes:**
 
@@ -1198,7 +1308,7 @@ and `/metrics` behavior is unchanged.
 
 When running `tunnel-client run`, the tunnel client serves a lightweight web UI from the same admin/health server.
 
-- **UI entrypoints**: `GET /` or `GET /ui`
+- **UI entrypoints**: `GET /`, `GET /ui`, or `GET /ui/`
 - **Static assets**: `GET /assets/*`
 - **Remote access (optional)**
   - By default, UI + log endpoints only respond to loopback clients (127.0.0.1/::1).
@@ -1209,10 +1319,94 @@ When running `tunnel-client run`, the tunnel client serves a lightweight web UI 
   - Flag: `--open-web-ui`
   - Env: `OPEN_WEB_UI`
   - Default: `false`
+- **Base path (optional)**
+  - Flag: `--admin-ui.base-path`
+  - Env: `ADMIN_UI_BASE_PATH`
+  - YAML: `admin_ui.base_path`
+  - Default: empty (the UI uses the root paths above).
+  - Set this only when a reverse proxy preserves the prefix in requests to
+    tunnel-client. For example, `/tools/tunnel` serves the UI at
+    `/tools/tunnel/`, `/tools/tunnel/ui`, and `/tools/tunnel/ui/`, with its
+    assets and admin API under the same prefix. The root `/healthz`, `/readyz`,
+    and `/metrics` endpoints remain available for probes and monitoring.
+  - A nonempty value must start with `/` and contain slash-separated,
+    nonempty segments made only of unreserved ASCII characters
+    (`A-Z`, `a-z`, `0-9`, `.`, `_`, `~`, `-`). The maximum configured length
+    is 2048 bytes before normalization. `/` normalizes to empty, and one
+    trailing slash is removed. Segments `.` and `..`, double slashes, percent
+    escapes, query strings, fragments, wildcards, and braces are rejected. The
+    `/health`, `/healthz`, `/readyz`, `/metrics`, and `/harpoon` namespaces
+    (the exact paths and their descendants) are reserved and cannot be used
+    as a base path.
+- **Public browser origin (optional)**
+  - Flag: `--admin-ui.public-origin`
+  - Env: `ADMIN_UI_PUBLIC_ORIGIN`
+  - YAML: `admin_ui.public_origin`
+  - Default: unset.
+  - Adds one exact HTTP(S) browser origin to the allowed `Origin` and `Referer`
+    origins for admin UI requests protected by the same-origin check (currently
+    Codex actions), after the existing UI network access check. Set it if the
+    proxy connects over loopback or Unix and the browser hostname is neither
+    `localhost` nor a loopback IP, even when Host is preserved. Also set it when
+    TLS termination or Host rewriting makes the browser and upstream origins
+    differ, for example `https://ops.example.com` behind a TLS-terminating
+    proxy. Scheme, host, and effective port must match; the default ports are
+    80 for HTTP and 443 for HTTPS.
+  - Supply an origin only: no credentials, path except an optional `/`, query,
+    fragment, wildcard, or IPv6 zone identifier. Hostnames must use ASCII;
+    use the browser's punycode form for internationalized hostnames. A port,
+    when present, must be between 1 and 65535. Every path on that origin receives
+    the same browser-origin permission, so use an origin whose applications you
+    trust.
+  - This permission does not authenticate users or grant network access. The
+    existing loopback/Unix default and `--allow-remote-ui` boundary still
+    apply. It does not change generated URLs or trust `Forwarded`,
+    `X-Forwarded-*`, or provider-specific prefix headers.
 - **Runtime log level toggle**
   - The Logs tab can change the live runtime log level between `debug`, `info`,
     and `warn` through `GET`/`PUT /api/log-level`.
   - Use this for short troubleshooting windows without restarting the client.
+
+The `base_path` and `public_origin` settings are available only in the full
+client. Their precedence is flag, environment, YAML, then default; an explicitly
+empty flag or environment value clears a value from a lower-precedence source.
+Runtime-only binaries do not expose these flags and reject nonempty environment
+or YAML values; empty environment and YAML values are accepted for compatibility.
+Older clients do not support these options: remove the new flags and YAML keys
+before downgrading, and do not expect the new environment variables to enable
+prefix support on an older version.
+
+### Reverse proxy paths
+
+Choose the layout that matches how the proxy forwards requests:
+
+| Proxy behavior | Browser UI URL | Upstream UI URL | Client setting |
+| --- | --- | --- | --- |
+| Strip `/tools/tunnel` | `/tools/tunnel/ui` | `/ui` | Leave `--admin-ui.base-path` empty |
+| Preserve `/tools/tunnel` | `/tools/tunnel/ui` | `/tools/tunnel/ui` | Set `--admin-ui.base-path=/tools/tunnel` |
+
+With a prefix-stripping proxy, the UI's relative URLs keep assets and admin API
+requests under the browser's prefix without a base-path setting. Expose the
+mount root with a trailing slash, such as `/tools/tunnel/`, or link to
+`/tools/tunnel/ui` or `/tools/tunnel/ui/`. If users may visit the bare mount
+`/tools/tunnel`, configure the proxy to redirect it to `/tools/tunnel/`; after
+stripping the prefix, the client cannot distinguish those two browser URLs.
+
+With a prefix-preserving proxy, set the base path to the prefix and forward it
+unchanged. The UI and its admin routes move under that mount, while root
+`/healthz`, `/readyz`, and `/metrics` keep their existing behavior. The UI uses
+prefixed aliases for those endpoints. For either layout, use the canonical UI
+URLs shown above; malformed paths containing dot segments or repeated slashes
+may follow Go's standard path-cleaning redirects.
+
+Keep the admin server on loopback or a Unix socket when the proxy runs locally.
+When the proxy connects over a non-loopback network, use `--allow-remote-ui`
+only on a trusted operator network and provide authentication at the proxy as
+needed. Configure `admin_ui.public_origin` for a browser hostname other than
+`localhost` or a loopback IP when the proxy connects locally, or when the proxy
+changes the upstream scheme or host. The client does not infer the public origin
+or prefix from proxy headers, so the proxy must enforce its own routing and
+header policy.
 
 ## Process utilities
 

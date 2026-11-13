@@ -293,6 +293,7 @@ type RuntimeConfig struct {
 // ControlPlaneConfig defines how the client reaches the tunnel control plane.
 type ControlPlaneConfig struct {
 	TraceContextEnabled   bool
+	Residency             Residency
 	BaseURL               *url.URL
 	UnixSocketPath        string
 	URLPath               string
@@ -422,6 +423,8 @@ type MCPConfig struct {
 	MaxConcurrentRequests int
 	ExtraHeaders          map[string]string
 	DiscoveryExtraHeaders map[string]string
+	// DisableOAuthDiscovery suppresses startup and on-demand OAuth discovery.
+	DisableOAuthDiscovery bool
 	OAuthTrustedOrigins   []*url.URL
 	HTTPProxy             *url.URL
 	HTTPProxySource       ProxySource
@@ -642,6 +645,7 @@ func WriteUsage(fs *pflag.FlagSet, w io.Writer) {
 	_, _ = fmt.Fprintln(fs.Output(), "  OPENAI_API_KEY\tAPI key env var used when CONTROL_PLANE_API_KEY unset")
 	_, _ = fmt.Fprintln(fs.Output(), "  CONTROL_PLANE_TUNNEL_ID\tIdentifier for this client/tunnel (required)")
 	_, _ = fmt.Fprintln(fs.Output(), "  MCP_SERVER_URL or MCP_COMMAND\tMain MCP target (required unless poll channels exclude main)")
+	_, _ = fmt.Fprintln(fs.Output(), "  MCP_OAUTH_DISCOVERY\tOAuth metadata discovery mode: auto (default) or disabled")
 	_, _ = fmt.Fprintln(fs.Output(), "  MCP_STDIO_FAILURE_POLICY\tRecovery after an unexpected stdio child loss: restart or exit (default: restart)")
 	_, _ = fmt.Fprintln(fs.Output(), "  MCP_FORWARD_TRACE_CONTEXT\tOpt in to forwarding traceparent/tracestate through MCP params._meta (default: false)")
 	_, _ = fmt.Fprintln(fs.Output(), "  FORWARD_REQUEST_ID\tHTTP egress surfaces for the original X-Request-Id (default: mcp)")
@@ -660,15 +664,13 @@ func RegisterFlags(fs *pflag.FlagSet, flavor Flavor) {
 	fs.String("profile", "", "Profile name to load from the profile directory (env.TUNNEL_CLIENT_PROFILE)")
 	fs.String("profile-file", "", "Path to a specific profile YAML file (env.TUNNEL_CLIENT_PROFILE_FILE)")
 	fs.String("profile-dir", "", "Directory containing profile YAML files (env.TUNNEL_CLIENT_PROFILE_DIR; default $XDG_CONFIG_HOME/tunnel-client or ~/.config/tunnel-client)")
-	fs.String("control-plane.base-url", defaultControlPlaneBaseURL, "Tunnel control-plane base URL (env.CONTROL_PLANE_BASE_URL)")
+	RegisterControlPlaneEndpointFlags(fs)
 	fs.String("control-plane.url-path", "", "Optional URL path appended to the control-plane base URL before tunnel-client adds its /v1/... routes (env.CONTROL_PLANE_URL_PATH)")
 	fs.String("control-plane.tunnel-id", "", "Identifier for this client/tunnel (env.CONTROL_PLANE_TUNNEL_ID)")
 	fs.String("control-plane.organization-id", "", "Organization ID to send as OpenAI-Organization on tunnel control-plane requests (env.CONTROL_PLANE_ORGANIZATION_ID)")
 	fs.String("control-plane.api-key", "", "Reference to environment variable or file containing the control-plane API key (format env:VARNAME or file:/path/to/secret)")
 	fs.String("control-plane.aws-identity-provider-id", "", "OpenAI identity provider ID for AWS workload identity")
 	fs.String("control-plane.aws-service-account-id", "", "OpenAI service account ID for AWS workload identity")
-	fs.String("control-plane.client-cert", "", "Path to PEM client certificate for control-plane mTLS (format <path|env:VAR|file:/path>) (env.CONTROL_PLANE_CLIENT_CERT)")
-	fs.String("control-plane.client-key", "", "Path to PEM client private key for control-plane mTLS (format <path|env:VAR|file:/path>) (env.CONTROL_PLANE_CLIENT_KEY)")
 	fs.String("control-plane.http-proxy", "", "Outbound HTTP proxy for the control plane (format <url|env:VAR>)")
 	fs.Int("control-plane.max-inflight", defaultControlPlaneMaxInFlight, "Capacity of the local polled-command buffer; polling pauses while the buffer is full (env.CONTROL_PLANE_MAX_INFLIGHT_REQUESTS, max 10000)")
 	fs.Duration("control-plane.poll-timeout", defaultControlPlanePollTimeout, "Long-poll timeout when fetching commands from the control plane (env.CONTROL_PLANE_POLL_TIMEOUT)")
@@ -701,6 +703,7 @@ func RegisterFlags(fs *pflag.FlagSet, flavor Flavor) {
 	fs.String("mcp.client-key", "", "Path to PEM client private key for MCP mTLS (format <path|env:VAR>) (env.MCP_CLIENT_KEY)")
 	fs.StringArray("mcp.extra-headers", nil, "Static HTTP headers to send to the configured MCP server origin (format 'Key: Value', repeatable; values accept env:VAR or file:/path) (env.MCP_EXTRA_HEADERS)")
 	fs.StringArray("mcp.discovery-extra-headers", nil, "Static HTTP headers to send to MCP discovery/probe requests for the configured MCP server origin (format 'Key: Value', repeatable; values accept env:VAR or file:/path) (env.MCP_DISCOVERY_EXTRA_HEADERS)")
+	fs.String("mcp.oauth-discovery", "auto", "OAuth metadata discovery mode for startup and later requests: auto or disabled (env.MCP_OAUTH_DISCOVERY)")
 	fs.StringArray("mcp.oauth-trusted-origin", nil, "Additional HTTP(S) origin trusted for OAuth discovery (repeatable; origin only, without a path) (env.MCP_OAUTH_TRUSTED_ORIGINS)")
 	fs.Duration("mcp.startup-wait-timeout", 0, "Maximum opt-in startup wait for the main MCP HTTP listener before first poll (env.MCP_STARTUP_WAIT_TIMEOUT)")
 	fs.Duration("mcp.connection-max-ttl", defaultMCPConnectionMaxTTL, "Maximum lifetime of MCP transport connections (env.MCP_CONNECTION_MAX_TTL)")
@@ -898,6 +901,8 @@ var fullOnlyFlags = []string{
 	"allow-remote-ui",
 	"open-web-ui",
 	"admin-ui.log-buffer-events",
+	"admin-ui.base-path",
+	"admin-ui.public-origin",
 	"proxy.check-interval",
 	"harpoon.capture-payloads",
 }
@@ -911,6 +916,8 @@ var fullOnlyEnv = []fullOnlyEnvSetting{
 	{name: "ALLOW_REMOTE_UI", isDefault: isDisabledBoolValue},
 	{name: "OPEN_WEB_UI", isDefault: isDisabledBoolValue},
 	{name: "ADMIN_UI_LOG_BUFFER_EVENTS", isDefault: isDefaultAdminUILogBufferEvents},
+	{name: "ADMIN_UI_BASE_PATH", isDefault: isEmptyFullOnlyValue},
+	{name: "ADMIN_UI_PUBLIC_ORIGIN", isDefault: isEmptyFullOnlyValue},
 	{name: "PROXY_CHECK_INTERVAL", isDefault: isDefaultProxyCheckInterval},
 	{name: "HARPOON_CAPTURE_PAYLOADS", isDefault: isDisabledBoolValue},
 }
@@ -973,6 +980,10 @@ func isDisabledBoolValue(raw string) (bool, error) {
 		return false, err
 	}
 	return !value, nil
+}
+
+func isEmptyFullOnlyValue(raw string) (bool, error) {
+	return raw == "", nil
 }
 
 func isDefaultAdminUILogBufferEvents(raw string) (bool, error) {
@@ -1260,15 +1271,11 @@ func getControlPlaneAPIKey(flagValue string, lookupEnv func(string) (string, boo
 }
 
 func buildControlPlaneConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), globalProxy *url.URL, globalProxySource ProxySource) (ControlPlaneConfig, error) {
-	clientCertificate, err := buildControlPlaneClientCertificate(fs, lookupEnv)
+	endpoint, err := BuildControlPlaneEndpoint(fs, lookupEnv)
 	if err != nil {
 		return ControlPlaneConfig{}, err
 	}
-	baseURLRaw := controlPlaneBaseURLRaw(fs, lookupEnv, clientCertificate)
-	baseURL, err := parseURL(baseURLRaw)
-	if err != nil {
-		return ControlPlaneConfig{}, fmt.Errorf("invalid control-plane.base-url: %w", err)
-	}
+	baseURL := endpoint.BaseURL
 	controlPlaneURLPath, err := NormalizeControlPlaneURLPath(controlPlaneURLPathRaw(fs, lookupEnv))
 	if err != nil {
 		return ControlPlaneConfig{}, err
@@ -1428,6 +1435,7 @@ func buildControlPlaneConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, 
 	}
 
 	return ControlPlaneConfig{
+		Residency:              endpoint.Residency,
 		BaseURL:                baseURL,
 		URLPath:                controlPlaneURLPath,
 		TunnelID:               types.TunnelID(tunnelID),
@@ -1440,7 +1448,7 @@ func buildControlPlaneConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, 
 		PollDeadlineGuardrail:  pollDeadlineGuardrail,
 		PollChannels:           pollChannels,
 		PollChannelsConfigured: pollChannelsConfigured,
-		ClientCertificate:      clientCertificate,
+		ClientCertificate:      endpoint.ClientCertificate,
 		ExtraHeaders:           extraHeaders,
 		HTTPProxy:              httpProxy,
 		HTTPProxySource:        httpProxySource,
@@ -1503,10 +1511,10 @@ func validateConfiguredPollChannels(controlPlane ControlPlaneConfig, mcp MCPConf
 				return errors.New("control-plane.poll-channel main has no local MCP handler")
 			}
 		case types.ChannelHarpoon:
-			// Main can discover and register Harpoon targets through OAuth after
-			// startup. A true Harpoon-only process has no such bootstrap path and
-			// must fail closed unless it starts with a routable target.
-			if len(harpoon.Targets) == 0 && !slices.Contains(controlPlane.PollChannels, types.DefaultChannel) {
+			// An explicit Harpoon subscription needs a configured target unless
+			// the main channel can discover and register targets through OAuth.
+			canDiscoverTargets := !mcp.DisableOAuthDiscovery && slices.Contains(controlPlane.PollChannels, types.DefaultChannel)
+			if len(harpoon.Targets) == 0 && !canDiscoverTargets {
 				return errors.New("control-plane.poll-channel harpoon has no routable target")
 			}
 		default:
@@ -1526,20 +1534,6 @@ func validateControlPlanePollTiming(pollTimeout, pollDeadlineGuardrail time.Dura
 		return fmt.Errorf("control-plane.poll-timeout plus control-plane.poll-deadline-guardrail must be less than or equal to %s", maxControlPlanePollDeadline)
 	}
 	return nil
-}
-
-func controlPlaneBaseURLRaw(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), clientCertificate *tlsconfig.ClientCertificate) string {
-	baseURLRaw := firstSet(
-		getValue(fs, "control-plane.base-url"),
-		envOrDefault(lookupEnv, "CONTROL_PLANE_BASE_URL", defaultControlPlaneBaseURL),
-	)
-	if clientCertificate == nil {
-		return baseURLRaw
-	}
-	if strings.TrimRight(strings.TrimSpace(baseURLRaw), "/") == defaultControlPlaneBaseURL {
-		return defaultControlPlaneMTLSBaseURL
-	}
-	return baseURLRaw
 }
 
 func controlPlaneURLPathRaw(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)) string {
@@ -2035,6 +2029,27 @@ func resolveStdioFailurePolicy(fs *pflag.FlagSet, lookupEnv func(string) (string
 	return StdioFailurePolicyRestart, nil
 }
 
+func parseOAuthDiscoveryMode(source, raw string) (disabled bool, err error) {
+	switch raw {
+	case "auto":
+		return false, nil
+	case "disabled":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid %s: must be auto or disabled", source)
+	}
+}
+
+func resolveDisableOAuthDiscovery(fs *pflag.FlagSet, lookupEnv func(string) (string, bool)) (bool, error) {
+	if raw, ok := changedStringFlag(fs, "mcp.oauth-discovery"); ok {
+		return parseOAuthDiscoveryMode("--mcp.oauth-discovery", raw)
+	}
+	if raw, ok := lookupEnv("MCP_OAUTH_DISCOVERY"); ok {
+		return parseOAuthDiscoveryMode("MCP_OAUTH_DISCOVERY", raw)
+	}
+	return false, nil
+}
+
 func buildMCPConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), globalProxy *url.URL, globalProxySource ProxySource, mainServerURL string) (MCPConfig, error) {
 	commandEntries, err := resolveMCPEntries(fs, lookupEnv, "mcp.command", "MCP_COMMAND")
 	if err != nil {
@@ -2160,6 +2175,10 @@ func buildMCPConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), gl
 	if err != nil {
 		return MCPConfig{}, err
 	}
+	disableOAuthDiscovery, err := resolveDisableOAuthDiscovery(fs, lookupEnv)
+	if err != nil {
+		return MCPConfig{}, err
+	}
 	oauthTrustedOrigins, err := buildOAuthTrustedOrigins(fs, lookupEnv)
 	if err != nil {
 		return MCPConfig{}, err
@@ -2218,6 +2237,7 @@ func buildMCPConfig(fs *pflag.FlagSet, lookupEnv func(string) (string, bool), gl
 		MaxConcurrentRequests:            maxConcurrent,
 		ExtraHeaders:                     extraHeaders,
 		DiscoveryExtraHeaders:            discoveryExtraHeaders,
+		DisableOAuthDiscovery:            disableOAuthDiscovery,
 		OAuthTrustedOrigins:              oauthTrustedOrigins,
 		HTTPProxy:                        mcpProxy,
 		HTTPProxySource:                  mcpProxySource,

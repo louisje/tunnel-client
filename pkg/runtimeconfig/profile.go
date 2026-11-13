@@ -342,6 +342,11 @@ func expandHome(path string, lookupEnv func(string) (string, bool)) (string, err
 }
 
 func validateFileConfigSyntax(c fileConfig) error {
+	if c.ControlPlane.Residency != nil {
+		if _, err := ParseResidency(*c.ControlPlane.Residency); err != nil {
+			return err
+		}
+	}
 	if err := validateConfigValueReferenceSyntax("control_plane.base_url", c.ControlPlane.BaseURL); err != nil {
 		return err
 	}
@@ -380,6 +385,11 @@ func validateFileConfigSyntax(c fileConfig) error {
 	}
 	if err := validateHeaderReferenceSyntax("mcp.discovery_extra_headers", c.MCP.DiscoveryExtraHeaders); err != nil {
 		return err
+	}
+	if c.MCP.OAuthDiscovery != nil {
+		if _, err := parseOAuthDiscoveryMode("mcp.oauth_discovery", *c.MCP.OAuthDiscovery); err != nil {
+			return err
+		}
 	}
 	if err := validateFileOAuthTrustedOrigins(c.MCP.OAuthTrustedOrigins); err != nil {
 		return err

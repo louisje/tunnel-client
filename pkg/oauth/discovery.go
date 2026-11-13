@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jpillora/backoff"
@@ -69,6 +70,7 @@ func FetchOAuthMetadata(
 	}
 
 	if failureType == discoveryFailureTypeTimeoutOnly {
+		finishStartupProbe(ctx, probeDispositionRetry)
 		if logger != nil {
 			logger.WarnContext(ctx, "oauth discovery encountered timeouts; retrying with timeout backoff")
 		}
@@ -103,6 +105,9 @@ func runOAuthMetadataDiscoveryPass(
 	failureType := discoveryFailureTypeTimeoutOnly
 	var responseFailures discoveryResponseFailures
 	for i, candidate := range filtered {
+		if i > 0 {
+			finishStartupProbe(ctx, probeDispositionFallback)
+		}
 		urlForLog := tclog.RedactURL(candidate.URL)
 		attempts[i].Tried = true
 		attempts[i].Selected = false
@@ -126,7 +131,11 @@ func runOAuthMetadataDiscoveryPass(
 		applyForwardedRequestID(req)
 
 		var resp *http.Response
-		discoveryClient := withSameOriginRedirects(withTrustedDiscoveryOrigins(client, candidate.trustedOrigins), candidate.URL)
+		discoveryClient := withStartupProbeHTTPClient(
+			ctx,
+			withSameOriginRedirects(withTrustedDiscoveryOrigins(client, candidate.trustedOrigins), candidate.URL),
+			probeTypeProtectedResourceMetadata,
+		)
 		if retryMode == discoveryRetryModeTimeoutBackoff {
 			resp, err = doWithRetryForTimeout(ctx, discoveryClient, req, logger)
 		} else {
@@ -209,6 +218,8 @@ func runOAuthMetadataDiscoveryPass(
 		}
 
 		if err := validateProtectedResourceMetadata(body); err != nil {
+			attempts[i].HTMLInsteadOfMetadata = resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+				strings.HasPrefix(http.DetectContentType(body), "text/html;")
 			lastErr = fmt.Errorf("oauth discovery invalid metadata from %s: %w", urlForLog, err)
 			attempts[i].Error = lastErr.Error()
 			responseFailures.record(resp.StatusCode, lastErr, true)
@@ -281,6 +292,9 @@ func doWithRetryForTimeout(
 
 	var lastErr error
 	for attempt := range oauthMetadataRequestRetryCount {
+		if attempt > 0 {
+			finishStartupProbe(ctx, probeDispositionRetry)
+		}
 		timeout := timeoutBackoff.Duration()
 		reqCtx, cancel := context.WithTimeout(baseReq.Context(), timeout)
 		req := baseReq.Clone(reqCtx)

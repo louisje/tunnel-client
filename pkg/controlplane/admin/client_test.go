@@ -26,7 +26,7 @@ func TestAdminTunnelClientCreateAndGet(t *testing.T) {
 			}
 			w.Header().Set("X-Request-Id", "req_create_123")
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"tunnel_1","name":"n","description":"d","creator":"u","organization_ids":["org1"],"workspace_ids":["ws1"]}`))
+			_, _ = w.Write([]byte(`{"id":"tunnel_1","name":"n","description":"d","creator":"u","organization_ids":["org1"],"workspace_ids":["ws1"],"residency":"eu","control_plane_url":"https://eu.api.openai.com"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/tunnels/tunnel_1":
 			w.Header().Set("X-Request-Id", "req_get_123")
 			w.Header().Set("Content-Type", "application/json")
@@ -62,6 +62,32 @@ func TestAdminTunnelClientCreateAndGet(t *testing.T) {
 	}
 	if fetched.Name != "n" || fetched.RequestID != "req_get_123" {
 		t.Fatalf("unexpected get response %+v", fetched)
+	}
+}
+
+func TestAdminResidencyRejectsRedirects(t *testing.T) {
+	t.Parallel()
+	forwarded := make(chan struct{}, 1)
+	destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		forwarded <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(destination.Close)
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(origin.Close)
+	client, err := NewAdminTunnelClient(&config.AdminConfig{Residency: "eu", BaseURL: mustParseURL(t, origin.URL), AdminKey: "fixture-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetTunnel(t.Context(), "tunnel_fixture"); err == nil {
+		t.Fatal("expected redirect rejection")
+	}
+	select {
+	case <-forwarded:
+		t.Fatal("redirect destination received a request")
+	default:
 	}
 }
 
