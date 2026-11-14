@@ -2692,7 +2692,8 @@ func TestBuildJSONRPCErrorResponseAndRequestKindAttributes(t *testing.T) {
 func TestProcessorForwardResponsesForwardsUpstreamNotificationRequests(t *testing.T) {
 	t.Parallel()
 
-	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	responder := newRecordingResponder()
 
 	callID, err := jsonrpc.MakeID("ignore-upstream-notif")
@@ -2746,6 +2747,8 @@ func TestProcessorForwardResponsesForwardsUpstreamNotificationRequests(t *testin
 	final := got[1]
 	require.Equal(t, cmd.id, final.requestID)
 	require.Equal(t, types.ResponseTypeJSONRPCResponse, final.response.Type())
+	require.Contains(t, logs.String(), "dispatcher forwarded MCP notification to control plane")
+	require.Contains(t, logs.String(), "method=notifications/progress")
 }
 
 func TestProcessorForwardResponsesBoundsNotificationPostByConnectionTTL(t *testing.T) {

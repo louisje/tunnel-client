@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -1079,6 +1080,24 @@ func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.Forw
 		logger.DebugContext(ctx, "dispatcher delivered response to control plane", attrs...)
 		responseDelivered = true
 		terminalResponseDelivered = true
+		if req.Method == "initialize" && os.Getenv("TUNNEL_EXPERIMENT_IDLE_LIST_CHANGED") == "1" {
+			// One-shot protocol probe: reuse the completed initialize tunnel request ID.
+			// Deliberately independent of tools/call and the request context.
+			requestID := cmd.RequestID()
+			go func() {
+				time.Sleep(2 * time.Second)
+				probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				probeCtx = tunnelctx.ContextWithShardToken(probeCtx, cmd.ShardToken())
+				notification := types.NewJSONRPCNotification(channel, json.RawMessage(`{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`), http.StatusOK, http.Header{"Content-Type": []string{"text/event-stream"}})
+				post := p.postTunnelResponse(probeCtx, requestID, notification)
+				if post.err != nil {
+					logger.Warn("idle list_changed probe rejected", append([]any{slog.String("request_id", requestID.String())}, post.errorAttrs()...)...)
+				} else {
+					logger.Info("idle list_changed probe accepted by control plane", slog.String("request_id", requestID.String()))
+				}
+			}()
+		}
 		return
 	}
 }
@@ -1177,6 +1196,7 @@ func (p *mcpProcessor) forwardNotification(ctx context.Context, logger *slog.Log
 		return false, nil
 	}
 
+	logger.InfoContext(ctx, "dispatcher forwarded MCP notification to control plane", append([]any{slog.String("method", notifyMsg.Method), slog.String("channel", string(channel))}, post.appendTunnelServiceRequestIDAttr(nil)...)...)
 	return true, nil
 }
 
