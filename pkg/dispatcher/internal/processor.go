@@ -1094,7 +1094,7 @@ func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.Forw
 				if post.err != nil {
 					logger.Warn("idle list_changed probe rejected", append([]any{slog.String("request_id", requestID.String())}, post.errorAttrs()...)...)
 				} else {
-					logger.Info("idle list_changed probe accepted by control plane", slog.String("request_id", requestID.String()))
+					logger.Info("idle list_changed probe post completed (delivery unconfirmed; HTTP 404 is treated as success)", slog.String("request_id", requestID.String()))
 				}
 			}()
 		}
