@@ -610,6 +610,11 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 			req = forwardTraceContext(req, headers, provider.TraceContext())
 		}
 	}
+	if provider, ok := cmd.(controlplane.ResponseDeadlineProvider); ok {
+		if deadline, hasDeadline := provider.ResponseDeadline(); hasDeadline {
+			req = forwardResponseDeadline(req, deadline, cmd.PolledAt())
+		}
+	}
 	p.logMCPMessage(ctx, logger, "outbound", channel, req, "", 0)
 	writeResult, err := conn.Write(ctx, headers, req)
 	if ctx.Err() != nil {
