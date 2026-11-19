@@ -357,6 +357,10 @@ func (p *mcpProcessor) Process(ctx context.Context, cmd controlplane.PolledComma
 	var cancel context.CancelFunc
 	if provider, ok := cmd.(controlplane.ResponseDeadlineProvider); ok {
 		if deadline, ok := provider.ResponseDeadline(); ok {
+			logger.DebugContext(ctx, "command response deadline received",
+				slog.Duration("response_timeout", deadline.Sub(cmd.PolledAt())),
+				slog.Time("response_deadline", deadline),
+				slog.Duration("response_time_remaining", time.Until(deadline)))
 			ctx, cancel = p.withDeadlineCause(ctx, deadline, errResponseDeadlineExceeded)
 			ctx = mcpclient.ContextWithResponseDeadlineEnforcement(ctx)
 		}
