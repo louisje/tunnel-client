@@ -505,6 +505,14 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 	}
 
 	isNotification := !req.ID.IsValid()
+	// Record arrival at the control-plane command boundary, before transport
+	// acquisition. This distinguishes an upstream cancellation that reached the
+	// tunnel from one blocked or lost while forwarding to the MCP server.
+	if p.traceMCP && isNotification && req.Method == "notifications/cancelled" {
+		logger.InfoContext(ctx, "mcp upstream cancellation received",
+			slog.String("channel", channel.String()),
+			slog.String("method", req.Method))
+	}
 	ctx, finishTrace := p.startTargetTrace(ctx)
 	defer finishTrace()
 	if !isNotification {
