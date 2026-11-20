@@ -521,8 +521,21 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 		}
 	}
 
-	// Establish MCP connection only for JSON-RPC commands.
-	conn, err := channelCfg.transport.Connect(ctx)
+	// Cancellation is a control-plane notification: do not queue it behind
+	// the outstanding request's serialized lifecycle slot.
+	var conn mcpclient.ForwardingConnection
+	var err error
+	if isNotification && req.Method == "notifications/cancelled" {
+		if control, ok := channelCfg.transport.(interface {
+			ConnectCancellationNotification(context.Context) (mcpclient.ForwardingConnection, error)
+		}); ok {
+			conn, err = control.ConnectCancellationNotification(ctx)
+		} else {
+			conn, err = channelCfg.transport.Connect(ctx)
+		}
+	} else {
+		conn, err = channelCfg.transport.Connect(ctx)
+	}
 	if err != nil {
 		recordWorkFailure(ctx, err, 0)
 		if ctx.Err() != nil {

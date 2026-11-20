@@ -143,6 +143,39 @@ const initializedNotificationMethod = "notifications/initialized"
 
 const retiredResponseAliasPrefix = "__tunnel_client_stdio_retired_"
 
+// ConnectCancellationNotification bypasses the request lifecycle slot for
+// cancellation notifications. The underlying transport must support concurrent
+// writes to its shared physical connection (as stdio does).
+func (t *serializedForwardingTransport) ConnectCancellationNotification(ctx context.Context) (ForwardingConnection, error) {
+	if !t.retireOnDeadline {
+		return t.Connect(ctx)
+	}
+	conn, err := t.base.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &cancellationNotificationConnection{base: conn}, nil
+}
+
+type cancellationNotificationConnection struct {
+	base ForwardingConnection
+}
+
+func (c *cancellationNotificationConnection) Write(ctx context.Context, headers http.Header, msg jsonrpc.Message) (ForwardingWriteResult, error) {
+	req, ok := msg.(*jsonrpc.Request)
+	if !ok || req.ID.IsValid() || req.Method != "notifications/cancelled" {
+		return ForwardingWriteResult{}, fmt.Errorf("cancellation notification connection only accepts notifications/cancelled")
+	}
+	return c.base.Write(ctx, headers, msg)
+}
+
+func (c *cancellationNotificationConnection) Read(context.Context) (jsonrpc.Message, error) {
+	return nil, fmt.Errorf("cancellation notification connection cannot read responses")
+}
+
+// Closing this logical connection must not close the shared stdio pipes.
+func (c *cancellationNotificationConnection) Close() error { return nil }
+
 func (t *serializedForwardingTransport) Connect(
 	ctx context.Context,
 ) (ForwardingConnection, error) {

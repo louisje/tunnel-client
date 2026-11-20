@@ -314,6 +314,40 @@ func TestSerializedForwardingTransportHoldsLifecycleLockUntilMatchingResponse(t 
 	require.NoError(t, connA.Close())
 }
 
+func TestSerializedForwardingTransportCancellationNotificationWhileCallPending(t *testing.T) {
+	t.Parallel()
+	baseConn := newStubSerializedForwardingConnection()
+	transport := NewSerializedForwardingTransportWithDeadlineRetirement(&stubSerializedForwardingTransport{conn: baseConn})
+	callConn, err := transport.Connect(context.Background())
+	require.NoError(t, err)
+	id, err := jsonrpc.MakeID("pending")
+	require.NoError(t, err)
+	_, err = callConn.Write(context.Background(), nil, &jsonrpc.Request{ID: id, Method: "tools/call"})
+	require.NoError(t, err)
+	defer callConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		conn, err := transport.(interface {
+			ConnectCancellationNotification(context.Context) (ForwardingConnection, error)
+		}).ConnectCancellationNotification(ctx)
+		if err != nil {
+			done <- err
+			return
+		}
+		_, err = conn.Write(ctx, nil, &jsonrpc.Request{Method: "notifications/cancelled"})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "cancellation must bypass the pending tools/call lifecycle slot")
+	case <-ctx.Done():
+		t.Fatal("cancellation notification blocked behind the pending tools/call")
+	}
+}
+
 func TestSerializedForwardingTransportReleasesAfterUpstreamErrorStatus(t *testing.T) {
 	t.Parallel()
 
