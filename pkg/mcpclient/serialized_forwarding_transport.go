@@ -493,6 +493,18 @@ func (c *serializedForwardingConnection) Write(
 	return result, err
 }
 
+// SendTestPing uses the existing physical connection only while its call is pending.
+func (c *serializedForwardingConnection) SendTestPing(ctx context.Context, params json.RawMessage) error {
+	c.stateMu.Lock()
+	pending := c.lockHeld && c.awaitingResponse && !c.retired
+	c.stateMu.Unlock()
+	if !pending || !c.transport.retireOnDeadline || !c.currentGeneration() || ctx.Err() != nil {
+		return context.Canceled
+	}
+	_, err := c.base.Write(ctx, nil, &jsonrpc.Request{Method: "notifications/tunnel/test_ping", Params: params})
+	return err
+}
+
 func (c *serializedForwardingConnection) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if c.base == nil {
 		c.release()

@@ -38,6 +38,7 @@ func TestProcessorResponseTimingRequiresMeasuredTerminalResponse(t *testing.T) {
 		notification bool
 		wantTiming   bool
 	}{
+		{name: "stdio pong then result", kind: config.MCPTransportStdio, steps: []readStep{{msg: &jsonrpc.Request{Method: "notifications/tunnel/test_pong", Params: json.RawMessage(`{"requestId":"timed-call"}`)}}, {msg: result}}, wantTiming: true},
 		{name: "stdio result", kind: config.MCPTransportStdio, steps: []readStep{{msg: result}}, wantTiming: true},
 		{name: "HTTP result", kind: config.MCPTransportHTTPStreamable, steps: []readStep{{msg: result}}, wantTiming: true},
 		{name: "stdio target error", kind: config.MCPTransportStdio, steps: []readStep{{msg: targetError}}, wantTiming: true},
@@ -89,12 +90,13 @@ func TestProcessorResponseTimingRequiresMeasuredTerminalResponse(t *testing.T) {
 			}
 			cmd := &fakePolledCommand{id: "timed-request", message: req, enqueuedAt: time.Now(), polledAt: time.Now(), shardToken: "timed-shard"}
 			require.NoError(t, processor.Process(context.Background(), cmd))
-			if len(tc.steps) > 1 {
+			if len(tc.steps) > 1 && tc.name != "stdio pong then result" {
 				progress := responder.waitForResponse(t).response
 				require.Equal(t, types.ResponseTypeJSONRPCNotification, progress.Type())
 				require.Nil(t, progress.Timing())
 			}
 			response := responder.waitForResponse(t).response
+			require.Empty(t, responder.responses)
 			if !tc.wantTiming {
 				require.Nil(t, response.Timing())
 				return
