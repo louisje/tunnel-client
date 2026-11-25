@@ -43,5 +43,8 @@ This folder contains customer-facing operator docs and contributor docs for
 - **Guide slide deck command**: `make end-user-guide-slides`
 - **Guide screenshot refresh command**: `make end-user-guide-screenshots`
 - **Development & testing**: [`development.md`](development.md)
+- **Development workflow**: [`development-workflow.md`](development-workflow.md)
+- **MCP experiments**: [`mcp-experiments.md`](mcp-experiments.md)
+- **Response timeout warning**: [`response-timeout-warning.md`](response-timeout-warning.md)
 - **Wire protocol and OpenAPI contract**: [`protocol.md`](protocol.md), [`openapi.json`](openapi.json)
 - **Roadmap / design notes**: [`roadmap.md`](roadmap.md)

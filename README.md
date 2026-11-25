@@ -151,6 +151,7 @@ tool and connects it to the OpenAI Tunnel control plane.
 - **Troubleshooting**: [`docs/troubleshooting.md`](docs/troubleshooting.md), including
   [DNS diagnostic logs for Android / Termux](docs/troubleshooting.md#dns-failures-and-android--termux).
 - **Development & testing**: [`docs/development.md`](docs/development.md)
+- **Development workflow**: [`docs/development-workflow.md`](docs/development-workflow.md)
 - **In-memory Go SDK example**:
   [`examples/go-sdk-inmemory`](examples/go-sdk-inmemory)
 - **Roadmap / design notes**: [`docs/roadmap.md`](docs/roadmap.md)
