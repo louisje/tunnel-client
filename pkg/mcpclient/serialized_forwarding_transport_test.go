@@ -1286,7 +1286,7 @@ func (s *stubSerializedForwardingConnection) Close() error {
 	return nil
 }
 
-func TestSerializedForwardingTransportTestPingWhileCallPending(t *testing.T) {
+func TestSerializedForwardingTransportTimeoutWarningWhileCallPending(t *testing.T) {
 	t.Parallel()
 	base := newStubSerializedForwardingConnection()
 	transport := NewSerializedForwardingTransportWithDeadlineRetirement(&stubSerializedForwardingTransport{conn: base})
@@ -1300,13 +1300,13 @@ func TestSerializedForwardingTransportTestPingWhileCallPending(t *testing.T) {
 	_, err = conn.Write(ctx, nil, &jsonrpc.Request{ID: id, Method: "tools/call"})
 	require.NoError(t, err)
 	ping := conn.(interface {
-		SendTestPing(context.Context, json.RawMessage) error
+		SendResponseTimeoutWarning(context.Context, json.RawMessage) error
 	})
-	require.NoError(t, ping.SendTestPing(ctx, json.RawMessage(`{"requestId":"pending"}`)))
+	require.NoError(t, ping.SendResponseTimeoutWarning(ctx, json.RawMessage(`{"requestId":"pending"}`)))
 	requireLifecycleLockHeld(t, transport.(*serializedForwardingTransport))
 	base.enqueueRead(&jsonrpc.Response{ID: id}, nil)
 	_, err = conn.Read(ctx)
 	require.NoError(t, err)
-	require.ErrorIs(t, ping.SendTestPing(ctx, nil), context.Canceled)
+	require.ErrorIs(t, ping.SendResponseTimeoutWarning(ctx, nil), context.Canceled)
 	requireLifecycleLockReleased(t, transport.(*serializedForwardingTransport))
 }

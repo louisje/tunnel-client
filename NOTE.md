@@ -15,3 +15,9 @@ Tunnel Client 尚待追蹤的實驗與限制；已完成的實作以 Git 紀錄�
 - Terminal Toolkit 的 `--experiment-mcp-events` 是獨立的 Webhook 訂閱／事件投遞路徑，不依賴 Tunnel Client 的 Idle Notification Queue。
 - 2026-11-16：Terminal Toolkit 新訂閱的 Webhook 收到 HTTP 200，且 Standard Webhooks 簽章交叉驗證通過，但 ChatGPT Work 對話未顯示事件。HTTP 200 不等於端對端處理成功，尚無法確認問題位於 OpenAI 端。
 - 現階段不因 MCP Events 實驗而擴充 Tunnel Client 的反向通訊架構；等待後續重新測試。
+
+## Response timeout warning（2026-11-25）
+
+- 已移除實驗 test_ping/test_pong，改為 stdio tools/call 在 response deadline 前 10 秒發送 notifications/tunnel/response_timeout_warning（requestId、remainingMs）；原 timeout 不超過 10 秒不發送。
+- notifications/tunnel/response_timeout_ack 僅記錄，不轉發、不等待、不延長 deadline。預警採 best-effort，正常回覆或取消時停止 timer。
+- Terminal Toolkit shell/python 可提前背景化；其他工具忽略。兩端單元測試及 Toolkit headless/proxy 端對端測試通過，待正式服務重啟驗收。

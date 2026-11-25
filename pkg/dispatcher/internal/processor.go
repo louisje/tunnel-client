@@ -750,46 +750,38 @@ func (p *mcpProcessor) processJsonRpcCommand(ctx context.Context, logger *slog.L
 		return nil
 	}
 
-	stopPing := func() {}
-	// Experimental ping: independent of response forwarding and its deadline.
-	if req.Method == "tools/call" && channelCfg.transportKind == runtimeconfig.MCPTransportStdio {
-		if control, ok := conn.(interface {
-			SendTestPing(context.Context, json.RawMessage) error
-		}); ok {
-			pingCtx, cancelPing := context.WithCancel(ctx)
-			stopPing = cancelPing
-			defer stopPing()
-			go func() {
-				delay := 20 * time.Second
-				if !writeResult.StartedAt.IsZero() {
-					delay = max(0, delay-time.Since(writeResult.StartedAt))
-				}
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-pingCtx.Done():
-					return
-				case <-timer.C:
-				}
-				if pingCtx.Err() != nil {
-					return
-				}
-				params, err := json.Marshal(map[string]any{"requestId": req.ID.Raw()})
-				if err != nil {
-					return
-				}
-				writeCtx, cancelWrite := context.WithTimeout(pingCtx, time.Second)
-				defer cancelWrite()
-				err = control.SendTestPing(writeCtx, params)
-				if err != nil {
-					logger.DebugContext(pingCtx, "experimental tunnel ping failed", slog.String("error", err.Error()))
-					return
-				}
-				logger.InfoContext(pingCtx, "experimental tunnel ping sent", slog.String("params", string(params)))
-			}()
+	stopWarning := func() {}
+	// Best-effort warning, independent of response forwarding and its deadline.
+	if provider, ok := cmd.(controlplane.ResponseDeadlineProvider); ok && req.Method == "tools/call" && channelCfg.transportKind == runtimeconfig.MCPTransportStdio {
+		deadline, hasDeadline := provider.ResponseDeadline()
+		if hasDeadline && deadline.Sub(cmd.PolledAt()) > responseTimeoutWarningLead {
+			if control, ok := conn.(interface {
+				SendResponseTimeoutWarning(context.Context, json.RawMessage) error
+			}); ok {
+				warningCtx, cancelWarning := context.WithCancel(ctx)
+				stopWarning = cancelWarning
+				defer stopWarning()
+				go func() {
+					if !waitForResponseTimeoutWarning(warningCtx, deadline) {
+						return
+					}
+					params, err := json.Marshal(map[string]any{"requestId": req.ID.Raw(), "remainingMs": max(0, time.Until(deadline).Milliseconds())})
+					if err != nil {
+						return
+					}
+					writeCtx, cancelWrite := context.WithTimeout(warningCtx, time.Second)
+					defer cancelWrite()
+					err = control.SendResponseTimeoutWarning(writeCtx, params)
+					if err != nil {
+						logger.DebugContext(warningCtx, "response timeout warning failed", slog.String("error", err.Error()))
+						return
+					}
+					logger.InfoContext(warningCtx, "response timeout warning sent", slog.String("params", string(params)))
+				}()
+			}
 		}
 	}
-	responseDelivered := p.forwardResponses(ctx, conn, logger, cmd, statusCode, respHeader, requestKindAttrs, latencyRecorded, channel, channelCfg.transportKind, writeResult.StartedAt, stopPing)
+	responseDelivered := p.forwardResponses(ctx, conn, logger, cmd, statusCode, respHeader, requestKindAttrs, latencyRecorded, channel, channelCfg.transportKind, writeResult.StartedAt, stopWarning)
 	if !responseDelivered && errors.Is(context.Cause(ctx), errResponseDeadlineExceeded) {
 		return ctx.Err()
 	}
@@ -955,7 +947,7 @@ func (p *mcpProcessor) postOAuthDiscoveryResponse(ctx context.Context, logger *s
 // or expire. Intermediate JSON-RPC notifications remain stream events. If the
 // downstream connection ends first, the dispatcher posts a terminal error
 // response so product callers do not wait forever.
-func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.ForwardingConnection, logger *slog.Logger, cmd controlplane.JsonRpcCommand, responseCode int, responseHeaders http.Header, metricAttrs []attribute.KeyValue, latencyRecorded *latencyFlags, channel types.Channel, transportKind runtimeconfig.MCPTransportKind, startedAt time.Time, stopPing func()) (responseDelivered bool) {
+func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.ForwardingConnection, logger *slog.Logger, cmd controlplane.JsonRpcCommand, responseCode int, responseHeaders http.Header, metricAttrs []attribute.KeyValue, latencyRecorded *latencyFlags, channel types.Channel, transportKind runtimeconfig.MCPTransportKind, startedAt time.Time, stopWarning func()) (responseDelivered bool) {
 	ttlCtx := ctx
 	cancel := func() {}
 	if p.connectionMaxTTL > 0 {
@@ -1026,7 +1018,7 @@ func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.Forw
 	for {
 		msg, readErr := conn.Read(ttlCtx)
 		if _, isResponse := msg.(*jsonrpc.Response); isResponse || readErr != nil || msg == nil {
-			stopPing()
+			stopWarning()
 		}
 		completedAt := time.Now()
 		if readErr != nil {
@@ -1057,8 +1049,8 @@ func (p *mcpProcessor) forwardResponses(ctx context.Context, conn mcpclient.Forw
 
 		p.logMCPMessage(ctx, logger, "inbound", channel, msg, req.Method, time.Since(startedAt))
 		if notifyMsg, ok := asNotification(msg); ok {
-			if transportKind == runtimeconfig.MCPTransportStdio && notifyMsg.Method == "notifications/tunnel/test_pong" {
-				logger.InfoContext(ctx, "experimental tunnel pong received", slog.String("params", string(notifyMsg.Params)))
+			if transportKind == runtimeconfig.MCPTransportStdio && notifyMsg.Method == "notifications/tunnel/response_timeout_ack" {
+				logger.InfoContext(ctx, "response timeout ack received", slog.String("params", string(notifyMsg.Params)))
 				continue
 			}
 
